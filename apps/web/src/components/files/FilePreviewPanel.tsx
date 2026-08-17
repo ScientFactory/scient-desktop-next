@@ -11,7 +11,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronRight, Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
+import { Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
 import * as Schema from "effect/Schema";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -69,7 +69,7 @@ import { installFileEditorDismissal } from "./fileEditorDismissal";
 import { resolveCenteredFileLineScrollTop } from "./fileLineReveal";
 import { DiffCommentAnnotation } from "../diffs/DiffCommentAnnotation";
 import { projectFileCacheKey, projectFileEditorCacheKey } from "./fileContentRevision";
-import { fileBreadcrumbs } from "./filePath";
+import { FileBreadcrumbNavigator } from "./FileBreadcrumbNavigator";
 import {
   isLatexPreviewFile,
   isMarkdownPreviewFile,
@@ -971,10 +971,6 @@ export default function FilePreviewPanel({
       }),
     [absolutePath, cwd, environmentId, relativePath, threadRef.threadId],
   );
-  const breadcrumbs = useMemo(
-    () => (relativePath ? fileBreadcrumbs(projectName, relativePath) : []),
-    [projectName, relativePath],
-  );
   const onFilePostRender = useFileLineReveal(relativePath, revealLine, revealRequestId);
   const handlePendingChange = useCallback(
     (path: string, pending: boolean) => {
@@ -1059,30 +1055,13 @@ export default function FilePreviewPanel({
             className="min-w-0 flex-1 rounded-none"
             data-file-breadcrumbs
           >
-            <div className="flex h-full w-max min-w-full items-center text-xs">
-              {breadcrumbs.map((crumb, index) => (
-                <div
-                  key={crumb.path || "project"}
-                  className="flex min-w-0 shrink-0 items-center"
-                  data-current-file-crumb={crumb.kind === "file"}
-                >
-                  {index > 0 ? (
-                    <ChevronRight className="mx-1 size-3.5 shrink-0 text-muted-foreground/60" />
-                  ) : null}
-                  <span
-                    className={cn(
-                      "max-w-40 truncate",
-                      crumb.kind === "file"
-                        ? "font-medium text-foreground"
-                        : "text-muted-foreground",
-                    )}
-                    title={crumb.path || projectName}
-                  >
-                    {crumb.label}
-                  </span>
-                </div>
-              ))}
-            </div>
+            <FileBreadcrumbNavigator
+              environmentId={environmentId}
+              cwd={cwd}
+              projectName={projectName}
+              relativePath={relativePath}
+              onOpenFile={onOpenFile}
+            />
           </ScrollArea>
           {absolutePath &&
           (environmentId === primaryEnvironmentId || remoteOpenState.mode !== "local-exec") ? (

@@ -2,7 +2,7 @@ import type { DesktopPreviewFavicon, PreviewSessionSnapshot } from "@t3tools/con
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 
-import { RightPanelTabs } from "./RightPanelTabs";
+import { buildTabContextMenuItems, RightPanelTabs } from "./RightPanelTabs";
 
 const previewSurface = {
   id: "browser:tab-1" as const,
@@ -113,5 +113,30 @@ describe("RightPanelTabs preview favicon", () => {
   it("hides a capture while the server session still describes another origin", () => {
     const html = renderTabs(favicon("data:image/png;base64,AAAA", "https://example.com/"));
     expect(html).not.toContain("data:image/png;base64,AAAA");
+  });
+});
+
+describe("RightPanelTabs context menu", () => {
+  it("offers explicit relative and full path actions for file tabs", () => {
+    expect(
+      buildTabContextMenuItems({ file: true, surfaceIndex: 0, surfaceCount: 2 }).map(
+        ({ id, label }) => ({ id, label }),
+      ),
+    ).toEqual([
+      { id: "copy-relative-path", label: "Copy relative path" },
+      { id: "copy-full-path", label: "Copy full path" },
+      { id: "close", label: "Close" },
+      { id: "close-others", label: "Close others" },
+      { id: "close-to-right", label: "Close to the right" },
+      { id: "close-all", label: "Close all" },
+    ]);
+  });
+
+  it("does not add path actions to non-file tabs", () => {
+    expect(
+      buildTabContextMenuItems({ file: false, surfaceIndex: 0, surfaceCount: 1 }).map(
+        (item) => item.id,
+      ),
+    ).toEqual(["close", "close-others", "close-to-right", "close-all"]);
   });
 });
