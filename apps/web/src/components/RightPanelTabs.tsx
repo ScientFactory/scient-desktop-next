@@ -41,6 +41,7 @@ import { scientRightPanelSurfaceTitle } from "~/scient/rightPanel/surfaces";
 import { PreviewPanelShell, type PreviewPanelMode } from "./preview/PreviewPanelShell";
 import { FaviconImage } from "./preview/PreviewFaviconIcon";
 import { PierreEntryIcon } from "./chat/PierreEntryIcon";
+import type { FilePathCopyFormat } from "./files/filePathClipboard";
 
 interface RightPanelTabsProps {
   mode: PreviewPanelMode;
@@ -61,7 +62,7 @@ interface RightPanelTabsProps {
   onCloseOtherSurfaces: (surface: RightPanelSurface) => void;
   onCloseSurfacesToRight: (surface: RightPanelSurface) => void;
   onCloseAllSurfaces: () => void;
-  onCopyFilePath: (relativePath: string) => void;
+  onCopyFilePath: (relativePath: string, format: FilePathCopyFormat) => void;
   onAddBrowser: () => void;
   onAddTerminal: () => void;
   onAddDiff: () => void;
@@ -122,7 +123,46 @@ const SURFACE_UNAVAILABLE_HINTS = {
   agents: "Available from a thread.",
 } as const;
 
-type TabContextMenuAction = "copy-path" | "close" | "close-others" | "close-to-right" | "close-all";
+type TabContextMenuAction =
+  | "copy-relative-path"
+  | "copy-full-path"
+  | "close"
+  | "close-others"
+  | "close-to-right"
+  | "close-all";
+
+export function buildTabContextMenuItems(input: {
+  readonly file: boolean;
+  readonly surfaceIndex: number;
+  readonly surfaceCount: number;
+}): readonly ContextMenuItem<TabContextMenuAction>[] {
+  const items: ContextMenuItem<TabContextMenuAction>[] = [];
+  if (input.file) {
+    items.push(
+      { id: "copy-relative-path", label: "Copy relative path" },
+      { id: "copy-full-path", label: "Copy full path" },
+    );
+  }
+  items.push(
+    { id: "close", label: "Close" },
+    {
+      id: "close-others",
+      label: "Close others",
+      disabled: input.surfaceCount <= 1,
+    },
+    {
+      id: "close-to-right",
+      label: "Close to the right",
+      disabled: input.surfaceIndex >= input.surfaceCount - 1,
+    },
+    {
+      id: "close-all",
+      label: "Close all",
+      disabled: input.surfaceCount === 0,
+    },
+  );
+  return items;
+}
 
 function DisabledReasonTooltip(props: { reason: string; trigger: ReactElement }) {
   return (
@@ -552,33 +592,19 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       const surfaceIndex = props.surfaces.findIndex((entry) => entry.id === surface.id);
       if (surfaceIndex < 0) return;
 
-      const items: ContextMenuItem<TabContextMenuAction>[] = [];
-      if (surface.kind === "file") {
-        items.push({ id: "copy-path", label: "Copy path" });
-      }
-      items.push(
-        { id: "close", label: "Close" },
-        {
-          id: "close-others",
-          label: "Close others",
-          disabled: props.surfaces.length <= 1,
-        },
-        {
-          id: "close-to-right",
-          label: "Close to the right",
-          disabled: surfaceIndex >= props.surfaces.length - 1,
-        },
-        {
-          id: "close-all",
-          label: "Close all",
-          disabled: props.surfaces.length === 0,
-        },
-      );
+      const items = buildTabContextMenuItems({
+        file: surface.kind === "file",
+        surfaceIndex,
+        surfaceCount: props.surfaces.length,
+      });
 
       const action = await api.contextMenu.show(items, { x: event.clientX, y: event.clientY });
       switch (action) {
-        case "copy-path":
-          if (surface.kind === "file") props.onCopyFilePath(surface.relativePath);
+        case "copy-relative-path":
+          if (surface.kind === "file") props.onCopyFilePath(surface.relativePath, "relative");
+          break;
+        case "copy-full-path":
+          if (surface.kind === "file") props.onCopyFilePath(surface.relativePath, "full");
           break;
         case "close":
           props.onCloseSurface(surface);

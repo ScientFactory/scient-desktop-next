@@ -101,6 +101,11 @@ import {
 } from "../workspaceBasenameLookup";
 import { useOpenChangeRequestLink } from "~/lib/openPullRequestLink";
 import { writeTextToClipboard } from "../hooks/useCopyToClipboard";
+import {
+  copyFilePathToClipboard,
+  filePathCopyTitle,
+  type FilePathCopyFormat,
+} from "./files/filePathClipboard";
 import { isPreviewSupportedInRuntime } from "../previewStateStore";
 import {
   openFileInPreview,
@@ -1272,40 +1277,21 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   }, [handleOpenInFilePreview, onOpenInBrowser, targetPath]);
 
   const handleCopy = useCallback(
-    (value: string, title: string) => {
-      if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: `Failed to copy ${title.toLowerCase()}`,
-            description: "Clipboard API unavailable.",
-          }),
-        );
-        return;
-      }
-
-      void navigator.clipboard.writeText(value).then(
-        () => {
-          toastManager.add({
-            type: "success",
-            title: `${title} copied`,
-            description: value,
-          });
-        },
-        (error) => {
+    (value: string, format: FilePathCopyFormat) => {
+      void copyFilePathToClipboard({
+        value,
+        format,
+        onError: (error) => {
           reportMarkdownActionFailure(
-            { operation: "copy-file-path", target: targetPath, copyTarget: title },
+            {
+              operation: "copy-file-path",
+              target: targetPath,
+              copyTarget: filePathCopyTitle(format),
+            },
             error,
           );
-          toastManager.add(
-            stackedThreadToast({
-              type: "error",
-              title: `Failed to copy ${title.toLowerCase()}`,
-              description: error instanceof Error ? error.message : "An error occurred.",
-            }),
-          );
         },
-      );
+      });
     },
     [targetPath],
   );
@@ -1340,11 +1326,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
           return;
         }
         if (clicked === "copy-relative") {
-          handleCopy(displayPath, "Relative path");
+          handleCopy(displayPath, "relative");
           return;
         }
         if (clicked === "copy-full") {
-          handleCopy(targetPath, "Full path");
+          handleCopy(targetPath, "full");
         }
       } catch (cause) {
         reportMarkdownActionFailure(

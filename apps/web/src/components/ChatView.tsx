@@ -159,6 +159,11 @@ import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "./pullRequest/PullRequestsUnavailableState";
 import { RightPanelTabs, type PullRequestTabStatus } from "./RightPanelTabs";
+import {
+  copyFilePathToClipboard,
+  resolveFilePathCopyValue,
+  type FilePathCopyFormat,
+} from "./files/filePathClipboard";
 import { ScientQuickChatMoveMenu } from "./scient-quick-chat/ScientQuickChatMoveMenu";
 import { resolveScientQuickChatMovePlacement } from "./scient-quick-chat/movePlacement";
 import {
@@ -3835,37 +3840,27 @@ function ChatViewContent(props: ChatViewProps) {
     cleanupRightPanelSurfaces(rightPanelState.surfaces);
     useRightPanelStore.getState().closeAllSurfaces(activeThreadRef);
   }, [activeThreadRef, cleanupRightPanelSurfaces, rightPanelState.surfaces]);
-  const copyRightPanelFilePath = useCallback((relativePath: string) => {
-    if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
-      toastManager.add(
-        stackedThreadToast({
-          type: "error",
-          title: "Failed to copy path",
-          description: "Clipboard API unavailable.",
-        }),
-      );
-      return;
-    }
-
-    void navigator.clipboard.writeText(relativePath).then(
-      () => {
-        toastManager.add({
-          type: "success",
-          title: "Path copied",
-          description: relativePath,
-        });
-      },
-      (error) => {
+  const copyRightPanelFilePath = useCallback(
+    (relativePath: string, format: FilePathCopyFormat) => {
+      const value = resolveFilePathCopyValue({
+        relativePath,
+        workspaceRoot: activeWorkspaceRoot,
+        format,
+      });
+      if (value === null) {
         toastManager.add(
           stackedThreadToast({
             type: "error",
-            title: "Failed to copy path",
-            description: error instanceof Error ? error.message : "An error occurred.",
+            title: "Failed to copy full path",
+            description: "This thread has no active workspace path.",
           }),
         );
-      },
-    );
-  }, []);
+        return;
+      }
+      void copyFilePathToClipboard({ value, format });
+    },
+    [activeWorkspaceRoot],
+  );
   useEffect(
     () =>
       subscribePreviewAction((action) => {
