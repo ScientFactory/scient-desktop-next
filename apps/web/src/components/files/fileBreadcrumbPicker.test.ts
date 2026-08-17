@@ -6,6 +6,7 @@ import {
   fileBreadcrumbBackTarget,
   fileBreadcrumbDirectoryLabel,
   fileBreadcrumbDirectoryParent,
+  getFileBreadcrumbEntryIndex,
   resolveFileBreadcrumbPickerListing,
 } from "./fileBreadcrumbPicker";
 
@@ -50,6 +51,13 @@ describe("file breadcrumb entry index", () => {
     expect(index.get("src")).toEqual([{ path: "src/index.ts", kind: "file", label: "index.ts" }]);
   });
 
+  it("reuses an index while the query entry array is unchanged", () => {
+    expect(getFileBreadcrumbEntryIndex(entries)).toBe(getFileBreadcrumbEntryIndex(entries));
+    expect(getFileBreadcrumbEntryIndex([...entries])).not.toBe(
+      getFileBreadcrumbEntryIndex(entries),
+    );
+  });
+
   it("resolves directory parents and display labels", () => {
     expect(fileBreadcrumbDirectoryParent("")).toBeNull();
     expect(fileBreadcrumbDirectoryParent("src")).toBe("");
@@ -74,6 +82,7 @@ describe("file breadcrumb picker listing", () => {
         index: null,
         directoryPath: "src",
         error: null,
+        isPending: true,
         truncated: false,
       }),
     ).toEqual({ state: "loading" });
@@ -82,9 +91,22 @@ describe("file breadcrumb picker listing", () => {
         index: null,
         directoryPath: "src",
         error: "Workspace query failed.",
+        isPending: false,
         truncated: false,
       }),
     ).toEqual({ state: "error", message: "Workspace query failed." });
+  });
+
+  it("shows loading feedback while retrying an initial query failure", () => {
+    expect(
+      resolveFileBreadcrumbPickerListing({
+        index: null,
+        directoryPath: "src",
+        error: "Workspace query failed.",
+        isPending: true,
+        truncated: false,
+      }),
+    ).toEqual({ state: "loading" });
   });
 
   it("does not describe a truncated directory as empty", () => {
@@ -93,6 +115,7 @@ describe("file breadcrumb picker listing", () => {
         index: new Map(),
         directoryPath: "src",
         error: null,
+        isPending: false,
         truncated: true,
       }),
     ).toEqual({
@@ -110,6 +133,7 @@ describe("file breadcrumb picker listing", () => {
         index,
         directoryPath: "src",
         error: null,
+        isPending: false,
         truncated: true,
       }),
     ).toMatchObject({
@@ -122,6 +146,7 @@ describe("file breadcrumb picker listing", () => {
         index,
         directoryPath: "missing",
         error: null,
+        isPending: false,
         truncated: false,
       }),
     ).toEqual({

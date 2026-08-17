@@ -6,6 +6,10 @@ export interface FileBreadcrumbPickerEntry extends ProjectEntry {
 
 export type FileBreadcrumbEntryIndex = ReadonlyMap<string, readonly FileBreadcrumbPickerEntry[]>;
 
+export const FILE_BREADCRUMB_PICKER_PAGE_SIZE = 200;
+
+const entryIndexCache = new WeakMap<ReadonlyArray<ProjectEntry>, FileBreadcrumbEntryIndex>();
+
 export type FileBreadcrumbPickerListing =
   | { readonly state: "loading" }
   | { readonly state: "error"; readonly message: string }
@@ -61,6 +65,16 @@ export function buildFileBreadcrumbEntryIndex(
   );
 }
 
+export function getFileBreadcrumbEntryIndex(
+  entries: ReadonlyArray<ProjectEntry>,
+): FileBreadcrumbEntryIndex {
+  const cached = entryIndexCache.get(entries);
+  if (cached) return cached;
+  const index = buildFileBreadcrumbEntryIndex(entries);
+  entryIndexCache.set(entries, index);
+  return index;
+}
+
 export function fileBreadcrumbDirectoryParent(path: string): string | null {
   const normalizedPath = normalizeRelativePath(path);
   if (!normalizedPath) return null;
@@ -91,8 +105,10 @@ export function resolveFileBreadcrumbPickerListing(input: {
   readonly index: FileBreadcrumbEntryIndex | null;
   readonly directoryPath: string;
   readonly error: string | null;
+  readonly isPending: boolean;
   readonly truncated: boolean;
 }): FileBreadcrumbPickerListing {
+  if (input.index === null && input.isPending) return { state: "loading" };
   if (input.index === null) {
     return input.error ? { state: "error", message: input.error } : { state: "loading" };
   }

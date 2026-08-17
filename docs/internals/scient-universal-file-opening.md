@@ -86,19 +86,34 @@ incomplete and would create a second browser implementation.
 ## Ownership and upstream maintenance
 
 Scient owns the contracts, preparation service, asset capability, presentation
-adapters, and right-panel descriptor. The inherited T3 surface is limited to:
+adapters, right-panel descriptor, breadcrumb navigator, and shared file-path
+clipboard behavior. Universal file opening and file-path affordances touch five
+inherited T3 files:
 
-1. `ChatMarkdown.tsx`: primary-click routing for workspace versus direct files
-   and the HTML Browser action.
-2. `ChatView.tsx`: one lazy mount for the Scient file surface.
+1. `ChatMarkdown.tsx`: primary-click routing for workspace versus direct files,
+   the HTML Browser action, and delegation to the shared path-copy handler.
+2. `ChatView.tsx`: one lazy mount for the Scient file surface and the active
+   workspace root supplied to right-panel full-path copying.
 3. `rightPanelStore.ts`: the existing `openScient` branch refreshes a matching
    Scient descriptor in place, so reopening one file at a new line updates the
    reveal target without creating another tab.
+4. `FilePreviewPanel.tsx`: one mount replaces the inherited display-only
+   breadcrumbs while preserving the current-file scroll marker and the existing
+   editor/save lifecycle.
+5. `RightPanelTabs.tsx`: the existing file-tab context menu offers relative and
+   full path copying through the shared handler.
 
-The inherited `FilePreviewPanel`, editor/save lifecycle, Browser manager, and
-attachment/image paths are unchanged. A static seam test guards this boundary.
-If T3 later provides an extensible file-presentation registry, Scient should
-adapt these owned presenters to it and retire the host seams.
+The inherited editor/save lifecycle, Browser manager, and attachment/image paths
+are unchanged. Static seam tests guard the file-opening boundary, while focused
+component tests pin the additive breadcrumb and clipboard behavior. If T3 later
+provides an extensible file-presentation registry, Scient should adapt these
+owned presenters to it and retire the host seams.
+
+The breadcrumb picker is shared by browser and desktop file previews and uses
+the existing ignore-aware `projects.listEntries` cache. File-tab copy actions use
+the native desktop context menu or the browser fallback. Mobile retains its
+existing single `Copy path` action, and the file explorer tree remains unchanged;
+those surfaces require separate product decisions rather than implicit parity.
 
 New rich formats should extend preparation metadata and add a presenter without
 adding producer-specific branches to the reader. Office/manuscript documents,
@@ -115,8 +130,8 @@ HTML script/data MIME handling, traversal and hidden-path rejection, symlink
 escape rejection, token tampering, and authorization scope. Web coverage must
 pin persisted surface normalization, PDF identity across threads and
 environments, repeated line-target replacement, incomplete multibyte decoding,
-explicit HTML capability use, and the three narrow host seams. Typechecks and
-production builds verify the RPC and lazy-chunk boundaries.
+explicit HTML capability use, and the five narrow inherited host files above.
+Typechecks and production builds verify the RPC and lazy-chunk boundaries.
 
 Manual acceptance should cover light and dark themes, empty and large text,
 line links, corrupt images/media, PDF state restoration, interactive HTML with

@@ -4,6 +4,14 @@ Scient opens files linked in chat inside Scient first. Project files keep their
 editable Files-panel behavior. Files elsewhere in the connected environment
 open in a read-only side panel or, for HTML, the integrated browser.
 
+In a project file's header, select the project name or any parent folder to
+browse that folder, drill into its subfolders, and open a nearby file. The final
+file name identifies the current file and is not a navigation control.
+
+Right-click a file tab to copy either its project-relative path or its full path.
+For a remote project, the full path belongs to the connected environment rather
+than the computer displaying Scient.
+
 - Markdown files open as rendered documents. Use the source/preview control in
   the file header to switch modes; Scient remembers that preference. A link to
   a specific Markdown line opens source so the requested line can be shown.

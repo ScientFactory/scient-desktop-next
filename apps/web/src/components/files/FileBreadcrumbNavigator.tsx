@@ -1,5 +1,12 @@
 import type { EnvironmentId } from "@t3tools/contracts";
-import { Check, ChevronLeft, ChevronRight, LoaderCircle, RotateCw } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  LoaderCircle,
+  RotateCw,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { PierreEntryIcon } from "~/components/chat/PierreEntryIcon";
@@ -16,9 +23,10 @@ import { useTheme } from "~/hooks/useTheme";
 import { cn } from "~/lib/utils";
 
 import {
-  buildFileBreadcrumbEntryIndex,
+  FILE_BREADCRUMB_PICKER_PAGE_SIZE,
   fileBreadcrumbBackTarget,
   fileBreadcrumbDirectoryLabel,
+  getFileBreadcrumbEntryIndex,
   resolveFileBreadcrumbPickerListing,
 } from "./fileBreadcrumbPicker";
 import { fileBreadcrumbs, type FileBreadcrumb } from "./filePath";
@@ -72,21 +80,32 @@ function FileBreadcrumbPickerMenu(props: {
   readonly onRequestClose: () => void;
 }) {
   const [directoryPath, setDirectoryPath] = useState(props.initialDirectoryPath);
+  const [visibleEntryLimit, setVisibleEntryLimit] = useState(FILE_BREADCRUMB_PICKER_PAGE_SIZE);
   const entriesQuery = useProjectEntriesQuery(props.environmentId, props.cwd);
   const index = useMemo(
     () =>
-      entriesQuery.data === null ? null : buildFileBreadcrumbEntryIndex(entriesQuery.data.entries),
+      entriesQuery.data === null ? null : getFileBreadcrumbEntryIndex(entriesQuery.data.entries),
     [entriesQuery.data],
   );
   const listing = resolveFileBreadcrumbPickerListing({
     index,
     directoryPath,
     error: entriesQuery.error,
+    isPending: entriesQuery.isPending,
     truncated: entriesQuery.data?.truncated ?? false,
   });
   const backTarget = fileBreadcrumbBackTarget(props.initialDirectoryPath, directoryPath);
   const directoryLabel = fileBreadcrumbDirectoryLabel(directoryPath, props.projectName);
+  const visibleEntries =
+    listing.state === "ready" ? listing.entries.slice(0, visibleEntryLimit) : [];
+  const hiddenEntryCount =
+    listing.state === "ready" ? Math.max(0, listing.entries.length - visibleEntries.length) : 0;
   const { resolvedTheme } = useTheme();
+
+  const browseDirectory = (path: string) => {
+    setDirectoryPath(path);
+    setVisibleEntryLimit(FILE_BREADCRUMB_PICKER_PAGE_SIZE);
+  };
 
   return (
     <MenuPopup
@@ -105,7 +124,7 @@ function FileBreadcrumbPickerMenu(props: {
         </MenuGroupLabel>
         {backTarget !== null ? (
           <>
-            <MenuItem closeOnClick={false} onClick={() => setDirectoryPath(backTarget)}>
+            <MenuItem closeOnClick={false} onClick={() => browseDirectory(backTarget)}>
               <ChevronLeft />
               Back
             </MenuItem>
@@ -118,7 +137,7 @@ function FileBreadcrumbPickerMenu(props: {
           <PickerStatus kind="error" message={listing.message} onRetry={entriesQuery.refresh} />
         ) : (
           <>
-            {listing.entries.map((entry) => {
+            {visibleEntries.map((entry) => {
               const currentFile = entry.kind === "file" && entry.path === props.selectedFilePath;
               return (
                 <MenuItem
@@ -128,7 +147,7 @@ function FileBreadcrumbPickerMenu(props: {
                   className="data-[current-file=true]:bg-accent/60"
                   onClick={() => {
                     if (entry.kind === "directory") {
-                      setDirectoryPath(entry.path);
+                      browseDirectory(entry.path);
                       return;
                     }
                     props.onRequestClose();
@@ -147,6 +166,17 @@ function FileBreadcrumbPickerMenu(props: {
                 </MenuItem>
               );
             })}
+            {hiddenEntryCount > 0 ? (
+              <MenuItem
+                closeOnClick={false}
+                onClick={() =>
+                  setVisibleEntryLimit((limit) => limit + FILE_BREADCRUMB_PICKER_PAGE_SIZE)
+                }
+              >
+                <ChevronDown />
+                Show {Math.min(hiddenEntryCount, FILE_BREADCRUMB_PICKER_PAGE_SIZE)} more
+              </MenuItem>
+            ) : null}
             {listing.message ? <PickerStatus kind="message" message={listing.message} /> : null}
           </>
         )}
@@ -176,12 +206,12 @@ export function FileBreadcrumbNavigator({
     <div className="flex h-full w-max min-w-full items-center text-xs">
       {breadcrumbs.map((crumb, index) => {
         const currentFile = crumb.kind === "file";
+        // FilePreviewPanel uses this marker to keep the current file visible after path changes.
         return (
           <div
             key={crumb.path || "project"}
             className="flex min-w-0 shrink-0 items-center"
             data-current-file-crumb={currentFile}
-            data-file-breadcrumb-kind={crumb.kind}
           >
             {index > 0 ? (
               <ChevronRight className="mx-1 size-3.5 shrink-0 text-muted-foreground/60" />
