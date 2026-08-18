@@ -6,6 +6,16 @@ Created: 2026-08-18
 Purpose: Defines the architecture, domain model, transport boundary, persistence semantics, and phased implementation plan for stateful interactive scientific compute sessions in Scient. Written as a companion to the accepted `scient-analysis-runtime-foundation.md`, which governs one-shot terminal execution.
 Doc type: Architecture decision record (proposed)
 
+## Planning Posture
+
+This is the first implementation plan for this subsystem, not a blind
+implementation mandate. It is a starting hypothesis intended to make the
+design reviewable. Improvement ideas, alternative designs, and architectural
+changes are explicitly welcome when they are justified from first principles,
+validated against the product goals, and shown to improve usefulness,
+reliability, scalability, or maintainability. Implementation should follow
+the best reviewed design, not this document mechanically.
+
 ## Document Rules
 
 This document proposes a new stateful compute subsystem. It does **not**
@@ -62,11 +72,11 @@ environments — builds on that loop incrementally.
 
 Scient already has two distinct execution systems. This proposal adds a third.
 
-| System | Purpose | Lifecycle |
-|---|---|---|
-| `AnalysisRun` | Isolated, terminal file/task execution | One process, one exit code, one terminal result |
-| `DocumentBuild` | Revision-bound LaTeX/document production | Build → publish → binding lifecycle |
-| `ComputeSession` (proposed) | Long-lived interactive namespace | Many executions, persistent variables, interrupt/restart |
+| System                      | Purpose                                  | Lifecycle                                                |
+| --------------------------- | ---------------------------------------- | -------------------------------------------------------- |
+| `AnalysisRun`               | Isolated, terminal file/task execution   | One process, one exit code, one terminal result          |
+| `DocumentBuild`             | Revision-bound LaTeX/document production | Build → publish → binding lifecycle                      |
+| `ComputeSession` (proposed) | Long-lived interactive namespace         | Many executions, persistent variables, interrupt/restart |
 
 ### Why they remain separate
 
@@ -82,10 +92,10 @@ atomic writes, artifact hashing, and resource telemetry. They must not share
 receipts, lifecycles, or persistence models.
 
 The existing `scient-analysis-runtime-foundation.md` explicitly states:
-*"When the second real consumer exposes genuinely shared server orchestration,
+_"When the second real consumer exposes genuinely shared server orchestration,
 lift that behavior into an `ExecutionCoordinator`; do not make `DocumentBuild`
 depend on `AnalysisService`, and do not force either specialized receipt into
-a generic task record."* This proposal follows that guidance: `ComputeSession`
+a generic task record."_ This proposal follows that guidance: `ComputeSession`
 is a sibling specialization, not a mode inside `AnalysisRun`.
 
 ---
@@ -161,9 +171,10 @@ session ID so additional sessions can be added later without migration.
 
 Generation starts at 1 and increases after every restart.
 
-Every mutating request carries `sessionId` and `expectedGeneration`. This
-prevents a stale browser or delayed request from executing code in a newly
-restarted namespace.
+Every public mutating request carries `sessionId` and `expectedGeneration`.
+Inside a session-scoped transport channel, `sessionId` is implicit but
+`expectedGeneration` remains explicit. This prevents a stale browser or
+delayed command from executing code in a newly restarted namespace.
 
 ### 4.3 Session lifecycle
 
@@ -218,6 +229,7 @@ A `ComputeExecution` records:
 queued → submitting → running → succeeded
                             → failed
                             → interrupting → cancelled
+                            → cancelled (restart or shutdown destroys namespace)
                             → lost
 ```
 
@@ -352,11 +364,17 @@ interface DuplexProcessHandle {
   readonly stdout: Stream<Uint8Array>;
   readonly stderr: Stream<Uint8Array>;
   readonly write: (bytes: Uint8Array) => Effect<void>;
-  readonly closeInput: Effect<void>;
   readonly exitCode: Effect<number>;
   readonly cancelProcessTree: Effect<void>;
 }
 ```
+
+The duplex handle deliberately does not expose `closeInput`. A responsive
+bridge leaves through a framed shutdown request it understands; an
+unresponsive bridge is removed through `cancelProcessTree`. Keeping stdin open
+also lets each serialized `write` report whether its bytes reached the
+operating system. A queue-backed writer whose EOF can be closed independently
+would detach delivery failures from the request that caused them.
 
 ### 6.3 Implementation
 
@@ -401,8 +419,14 @@ The bridge:
 - Sends execute, interrupt, restart, completion, inspection, and shutdown
   commands.
 - Reports bridge and kernel process IDs.
+- Starts concurrent protocol-stdout and diagnostic-stderr drains immediately
+  after spawn, before sending any request, so pipe backpressure cannot deadlock
+  a bridge trying to answer.
 - Enforces protocol frame-size limits before sending data to Node.
 - Removes connection files during shutdown.
+- Does not exit cleanly until every runtime process it started has stopped;
+  process-tree cancellation is the fallback while the bridge supervisor is
+  still live, not a way to recover descendants from a vanished leader.
 - Exits if its parent server connection closes (parent-death watchdog).
 
 ### 7.3 Initial bridge runtime strategy
@@ -437,6 +461,10 @@ Every message includes:
 
 Stderr is reserved for bounded bridge diagnostics, separate from protocol
 output.
+
+The streaming decoder must be finalized when protocol stdout ends. EOF with a
+partial length header or payload is a truncated frame and fails the transport;
+it is never treated as orderly bridge shutdown.
 
 ### 7.5 Why framing matters
 
@@ -555,22 +583,24 @@ operating-system permissions of the Scient server process.
 
 ```ts
 interface ComputeTransport {
-  open(
-    request: TransportOpenRequest,
-  ): Effect<ComputeChannel, ComputeTransportError, Scope>;
+  open(request: TransportOpenRequest): Effect<ComputeChannel, ComputeTransportError, Scope>;
 }
 
 interface ComputeChannel {
   readonly events: Stream<TransportEvent>;
-  execute(request: ExecuteRequest): Effect<void>;
-  interrupt(): Effect<void>;
-  restart(): Effect<void>;
-  shutdown(): Effect<void>;
+  execute(request: ExecuteRequest & GenerationPrecondition): Effect<void>;
+  interrupt(request: InterruptRequest & GenerationPrecondition): Effect<void>;
+  restart(request: RestartRequest & GenerationPrecondition): Effect<void>;
+  shutdown(request: GenerationPrecondition): Effect<void>;
 }
 ```
 
 Completion and inspection are optional capabilities represented in the
 transport contract and added when needed.
+
+The channel already identifies the session. Every mutating command still
+carries `expectedGeneration`, and restart also carries the exact next
+generation, so delayed commands cannot act on a replacement namespace.
 
 ### 9.2 Language adapter
 
@@ -581,13 +611,18 @@ interface ComputeLanguageAdapter {
 
   discover(...): Effect<ReadonlyArray<RuntimeProfile>>;
   verify(...): Effect<RuntimeVerification>;
-  prepareLaunch(...): Effect<TransportOpenRequest>;
+  prepareLaunch(...): Effect<ComputeLaunchPlan>;
   normalizeDiagnostic(...): ReadonlyArray<ComputeDiagnostic>;
   fingerprintEnvironment(...): Effect<EnvironmentFingerprint>;
 }
 ```
 
 Later variable inspection belongs here as a capability.
+
+The coordinator, not the language adapter, constructs `TransportOpenRequest`.
+This keeps session identity, generation, transport selection, and required
+capabilities under session policy; the adapter owns only language-specific
+launch preparation.
 
 ### 9.3 What belongs in an adapter
 
@@ -648,10 +683,10 @@ The first product slice supports:
 
 ```ts
 type ComputeOutput =
-  | StreamOutput    // stdout/stderr text
+  | StreamOutput // stdout/stderr text
   | DiagnosticOutput // exception type, message, traceback frames
-  | ImageOutput     // PNG figure with content hash and signed resource
-  | SystemOutput;   // session started, interrupted, restarted, lost, truncated
+  | ImageOutput // PNG figure with content hash and signed resource
+  | SystemOutput; // session started, interrupted, restarted, lost, truncated
 ```
 
 ### 10.2 Reserved future output types
@@ -736,11 +771,7 @@ Add a narrow resource to `AssetResource`:
 
 ```ts
 {
-  _tag: "compute-output",
-  projectId,
-  sessionId,
-  executionId,
-  outputId
+  _tag: ("compute-output", projectId, sessionId, executionId, outputId);
 }
 ```
 
@@ -1083,18 +1114,18 @@ malicious Python code.
 
 Treat these as initial engineering limits, not permanent product guarantees:
 
-| Resource | Initial limit |
-|---|---:|
-| Submitted code | 1 MiB |
-| Bridge frame | 16 MiB |
-| Pending executions | 16 |
-| Single text output event | 256 KiB |
-| Retained output per execution | 64 MiB |
-| PNG representation | 32 MiB |
-| In-memory recent transcript | Bounded by events and bytes |
-| Graceful shutdown deadline | 5 seconds |
-| Heartbeat timeout | 10 seconds |
-| Unresponsive → lost escalation | 30 seconds |
+| Resource                       |               Initial limit |
+| ------------------------------ | --------------------------: |
+| Submitted code                 |                       1 MiB |
+| Bridge frame                   |                      16 MiB |
+| Pending executions             |                          16 |
+| Single text output event       |                     256 KiB |
+| Retained output per execution  |                      64 MiB |
+| PNG representation             |                      32 MiB |
+| In-memory recent transcript    | Bounded by events and bytes |
+| Graceful shutdown deadline     |                   5 seconds |
+| Heartbeat timeout              |                  10 seconds |
+| Unresponsive → lost escalation |                  30 seconds |
 
 Every truncation must produce a visible persisted marker.
 
@@ -1172,11 +1203,11 @@ The server derives this from authenticated invocation context. The agent does
 not submit its own authoritative actor identity.
 
 The existing `scient-analysis-runtime-foundation.md` explicitly states:
-*"Actor identity is deliberately not represented as a nullable execution-receipt
+_"Actor identity is deliberately not represented as a nullable execution-receipt
 placeholder. Before agent- or automation-triggered runs land, the accepted
 Scient operation envelope must supply the host-resolved actor, project scope,
 capabilities, authority generation, and operation lineage; the result receipt
-then binds to that envelope rather than trusting an analysis-RPC payload."*
+then binds to that envelope rather than trusting an analysis-RPC payload."_
 
 ### 19.2 Agent session ownership
 

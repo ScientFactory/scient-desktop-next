@@ -10,34 +10,19 @@ import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
 import { ExecutionProcess, layer } from "./LocalExecutionProcess.ts";
+import { descendantFixture, processExists } from "./LocalProcessTestSupport.ts";
 
 const Live = layer.pipe(Layer.provideMerge(NodeServices.layer));
-
-function processExists(pid: number): boolean {
-  try {
-    NodeProcess.kill(pid, 0);
-    return true;
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ESRCH") return false;
-    throw error;
-  }
-}
 
 describe("LocalExecutionProcess", () => {
   it.effect("cancels a spawned descendant with the owned process tree", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const processes = yield* ExecutionProcess;
-        const fixture = [
-          "const { spawn } = require('node:child_process');",
-          "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
-          "process.stdout.write(String(child.pid) + '\\n');",
-          "setInterval(() => {}, 1000);",
-        ].join("\n");
         const handle = yield* processes.start({
           runId: ExecutionRunId.make("process-tree-test"),
           executable: NodeProcess.execPath,
-          args: ["-e", fixture],
+          args: ["-e", descendantFixture],
           cwd: NodeProcess.cwd(),
           environment: {},
         });

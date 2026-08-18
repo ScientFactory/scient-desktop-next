@@ -8,7 +8,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcessSpawner } from "effect/unstable/process";
+
+import { LOCAL_OWNED_PROCESS_KILL_OPTIONS, makeLocalOwnedProcess } from "./LocalOwnedProcess.ts";
 
 export class ExecutionProcess extends Context.Service<ExecutionProcess, ExecutionProcessPort>()(
   "t3/scient/execution/LocalExecutionProcess/ExecutionProcess",
@@ -29,17 +31,7 @@ const make = Effect.gen(function* () {
   const start: ExecutionProcessPort["start"] = (request) =>
     Effect.gen(function* () {
       const child = yield* spawner
-        .spawn(
-          ChildProcess.make(request.executable, request.args, {
-            cwd: request.cwd,
-            env: request.environment,
-            extendEnv: true,
-            shell: false,
-            detached: platform !== "win32",
-            killSignal: "SIGTERM",
-            forceKillAfter: "5 seconds",
-          }),
-        )
+        .spawn(makeLocalOwnedProcess(request, platform))
         .pipe(
           Effect.mapError((cause) =>
             processError("spawn", "Unable to start the execution process.", cause),
@@ -69,7 +61,7 @@ const make = Effect.gen(function* () {
       // taskkill /T /F on Windows. Keep this as a tree operation; the integration
       // fixture proves a spawned descendant exits with its parent.
       const cancel = child
-        .kill({ killSignal: "SIGTERM", forceKillAfter: "5 seconds" })
+        .kill(LOCAL_OWNED_PROCESS_KILL_OPTIONS)
         .pipe(
           Effect.mapError((cause) =>
             processError("cancel", "Unable to stop the execution process tree.", cause),
