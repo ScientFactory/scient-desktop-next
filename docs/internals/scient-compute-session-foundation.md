@@ -1328,6 +1328,575 @@ UI, or analysis code. The language-boundary test passes in CI.
 emits PNG output, and terminates without orphan processes on macOS, Windows,
 and Linux.
 
+#### Phase 2 implementation plan
+
+This section is the implementation contract for Phase 2. It turns the
+architectural direction above into reviewable work units. Phase 2 stops at the
+transport and Python adapter boundary. It does not create sessions, persistence,
+RPC, authorization, assets, or UI.
+
+##### 2.1 Principles and proof boundary
+
+The implementation follows these rules:
+
+1. Use public `jupyter_client` APIs rather than implementing Jupyter or ZeroMQ
+   in TypeScript.
+2. Keep Jupyter and Python details inside the bridge, transport, and Python
+   adapter. Do not add them to the coordinator-neutral package except where a
+   real transport requirement exposes a missing neutral contract.
+3. Prefer one supervised bridge process, one kernel, one framed pipe in each
+   direction, and one event stream. Do not add a daemon, socket server,
+   kernelspec registry, plugin framework, or general Python manager.
+4. Decode and validate every external value once at its boundary. Internal code
+   receives typed values, not unchecked dictionaries.
+5. Bound every queue, frame, text value, traceback, image, diagnostic stream,
+   deadline, and retained log.
+6. Treat EOF, malformed messages, version mismatch, sequence mismatch, process
+   exit, and kernel death as explicit failures. Never infer success from
+   silence.
+7. Prove cleanup with observed PIDs and process liveness. Never find or kill
+   processes by executable name.
+8. Require no modification of the selected Python environment. Verification is
+   read-only and startup never installs packages.
+
+The Phase 2 proof owns only this path:
+
+```text
+PythonRuntimeAdapter
+  → ComputeEnvironmentPolicy
+  → LocalDuplexProcess
+  → scient_compute_bridge.py
+  → jupyter_client
+  → one ipykernel
+  → typed ComputeTransportEvent stream
+```
+
+The deterministic simulator remains the coordinator test double. Tests above
+this boundary must not need Python.
+
+##### 2.2 Phase 1 amendments required before bridge work
+
+Implementation begins with four narrow corrections exposed by the real
+transport design:
+
+- Add an explicit environment-inheritance policy to
+  `DuplexProcessRequest`/`LocalOwnedProcess`. Compute launches must use a
+  complete sanitized environment with `extendEnv: false`; existing one-shot
+  callers retain their present behavior. Passing a sanitized record while the
+  process layer silently re-adds the host environment is not sanitization.
+- Add a transient binary-image transport event. `ComputeOutput.image` remains
+  durable metadata, while the transport event carries its validated
+  `Uint8Array` bytes alongside that metadata. Phase 3 consumes the bytes into
+  compute-owned storage and persists only the metadata/reference. Do not put
+  base64 or multi-megabyte byte arrays into durable snapshots.
+- Change `ComputeLanguageAdapter.verify` to accept the same
+  `ComputeLaunchRequest` as `prepareLaunch`, not only a runtime profile.
+  Verification must exercise the selected executable with the caller-approved
+  working directory and sanitized environment that launch will use.
+- Add a bounded neutral `runtime-warning` system event. It represents
+  nonfatal transport/runtime degradation, such as omitted mutable display
+  behavior or inconsistent kernel metadata, without misclassifying it as
+  Python user-code failure. Its existing bounded `detail` field must contain no
+  submitted code, credentials, connection data, or environment values.
+
+Name the transient image type independently (for example,
+`ComputeTransportImageEvent`) rather than making bytes optional on every
+persisted `ComputeOutput`. Add contract and simulator tests for all four
+amendments before using them in the Jupyter transport.
+
+No other Phase 1 contract changes are presumed. If implementation exposes
+another mismatch, stop and amend the neutral contract with a focused test
+instead of leaking a Jupyter special case into server orchestration.
+
+##### 2.3 Concrete file layout
+
+Add only:
+
+```text
+apps/server/src/scient/compute/
+  BridgeProtocol.ts
+  BridgeProtocol.test.ts
+  ComputeEnvironmentPolicy.ts
+  ComputeEnvironmentPolicy.test.ts
+  JupyterBridgeTransport.ts
+  JupyterBridgeTransport.test.ts
+  PythonRuntimeAdapter.ts
+  PythonRuntimeAdapter.test.ts
+  PythonDiagnostic.ts
+  PythonDiagnostic.test.ts
+  bridge/
+    scient_compute_bridge.py
+    test_scient_compute_bridge.py
+  fixtures/
+    bridge/
+      *.json
+  PythonKernel.integration.test.ts
+```
+
+The Python sidecar is a single checked-in file and uses only the standard
+library plus `jupyter_client`. Python tests use `unittest`; do not introduce a
+Python project, package manager, lockfile, or pytest dependency for this phase.
+TypeScript services follow existing server Effect `Context.Service`/`Layer`
+patterns. Pure discovery, protocol, environment, and diagnostic helpers remain
+plain functions where dependency injection adds no value.
+
+Add `@scientfactory/compute` to the server workspace dependencies. Do not add
+Node or Python dependencies to `@scientfactory/compute`.
+
+##### 2.4 Protocol message schemas
+
+`BridgeProtocol.ts` owns a closed union of per-message payload schemas on top
+of the Phase 1 envelope and codec. Unknown message types or invalid payloads
+fail the channel. Protocol v1 contains:
+
+| Direction       | Type                 | Purpose                                                                                          |
+| --------------- | -------------------- | ------------------------------------------------------------------------------------------------ |
+| server → bridge | `hello`              | Negotiate version, limits, build, capabilities, and owner token.                                 |
+| bridge → server | `hello-ack`          | Echo ownership and report bridge/platform capability.                                            |
+| server → bridge | `start-kernel`       | Start exactly one kernel for the selected interpreter and working directory.                     |
+| bridge → server | `kernel-ready`       | Report kernel PID, language identity, versions, and capabilities.                                |
+| server → bridge | `execute`            | Submit code with stdin disabled and silent/store-history policy explicit.                        |
+| bridge → server | `accepted`           | Confirm that an execute passed bridge validation.                                                |
+| bridge → server | `stream`             | Emit bounded stdout/stderr text for an execution or session.                                     |
+| bridge → server | `display`            | Emit one selected PNG or bounded text fallback.                                                  |
+| bridge → server | `error`              | Emit the raw bounded Python error report.                                                        |
+| bridge → server | `warning`            | Emit a bounded nonfatal runtime warning or output-truncation notice.                             |
+| bridge → server | `execution-complete` | Report the execute request outcome after reply-plus-idle correlation.                            |
+| server → bridge | `interrupt`          | Interrupt the currently active kernel request.                                                   |
+| bridge → server | `interrupt-result`   | Report whether the targeted execution was interrupted, already terminal, rejected, or timed out. |
+| server → bridge | `restart`            | Replace the kernel with the exact requested next generation.                                     |
+| bridge → server | `restarted`          | Report the replacement kernel PID and generation.                                                |
+| server → bridge | `shutdown`           | Gracefully stop kernel and bridge.                                                               |
+| bridge → server | `shutdown-complete`  | Confirm that the kernel is gone before clean bridge exit.                                        |
+| bridge → server | `fatal`              | Report a bounded bridge/kernel failure before non-zero exit when possible.                       |
+
+Rules:
+
+- The server sends `hello` first. No kernel starts before a valid
+  `hello`/`hello-ack` exchange.
+- `hello` carries protocol version, server build identity, 16 MiB frame limit,
+  required capabilities, and a cryptographically random 256-bit owner token.
+  `hello-ack` must echo the token exactly. The token is process-local, never
+  logged or persisted.
+- Each direction owns an independent contiguous sequence starting at zero.
+  Duplicate, missing, decreasing, or overflowing sequence values fail the
+  transport. Pipes preserve order, so a gap is corruption, not a retry case.
+- Every post-handshake message must match the opened `sessionId`. Generation
+  must equal the live generation except that `restart` names both the current
+  and exact next generation. A stale or skipped generation fails closed.
+- Request IDs are non-null only for command-correlated messages. An
+  `interrupt` uses the active execute request ID as its target, matching the
+  neutral `ComputeInterruptRequest`; it does not allocate or publish a second
+  request ID. Message type and state distinguish execute acceptance from an
+  interrupt result.
+- Each execute request is accepted at most once and reaches exactly one
+  terminal `execution-complete` event unless the channel is lost. Unknown,
+  duplicate, or terminal request IDs are protocol errors.
+- `accepted` applies only to `execute`. The interrupt call waits for its
+  bounded `interrupt-result`: `interrupted` means the signal was delivered and
+  the execute still terminates only through `execution-complete`; `terminal`
+  is the benign completion race; `rejected` or `timeout` fails the interrupt
+  call with `ComputeTransportError`. A malformed or missing result fails the
+  channel.
+- A `warning` maps only to the neutral `output-truncated`,
+  `input-unsupported`, or `runtime-warning` system event named by its decoded
+  warning code. Unknown warning codes fail the closed protocol.
+- JSON fields use explicit schemas and bounded lengths/counts. Booleans and
+  nulls are not accepted as string substitutes.
+- PNG bytes are base64 only on the bridge wire. The server checks encoded
+  length before decoding, decodes once, verifies PNG signature and byte limit,
+  computes SHA-256 itself, and emits transient bytes plus trusted metadata.
+- Diagnostic stderr is not protocol. Node drains it concurrently from spawn,
+  retains only a bounded tail for failure context, redacts the owner token if
+  encountered, and never forwards arbitrary stderr as user output.
+- On protocol stdout EOF, Node calls decoder `finish()` before interpreting
+  process exit. Partial data is truncation even if the process exit code is
+  zero.
+
+Keep golden JSON fixtures intentionally small. Generated PNG bytes belong in
+test helpers, not large checked-in blobs.
+
+##### 2.5 Handshake and startup state machine
+
+`JupyterBridgeTransport.open` has one linear startup:
+
+```text
+spawned
+  → streams-draining
+  → hello-sent
+  → hello-acknowledged
+  → kernel-starting
+  → kernel-ready
+  → open
+```
+
+Any failure moves directly to `closing`, then `closed`. Startup uses one
+deadline covering bridge import, handshake, kernel launch, and
+`wait_for_ready`; the initial value is 30 seconds and is injectable in tests.
+Timeout always cancels the owned process tree and waits for observed bridge
+exit before returning.
+
+The bridge reports its own PID in `hello-ack` and the kernel PID in
+`kernel-ready`. Node verifies positive safe integers and rejects a bridge PID
+that disagrees with the spawned handle. A missing kernel PID is a startup
+failure for the local Python implementation because Phase 2 cleanup proof
+depends on it.
+
+The transport compares negotiated capabilities with
+`requiredCapabilities` before returning the channel. Phase 2 requires
+`execute`, `interrupt`, `restart`, and `shutdown`; unsupported optional
+capabilities are not advertised.
+
+Only one fiber reads protocol stdout and mutates protocol state. Command
+writes are serialized by `LocalDuplexProcess`. Event publication uses both
+count and aggregate-byte bounds; if a consumer cannot keep up, the transport
+fails rather than buffering without limit or silently dropping output. Scope
+finalization runs the same bounded shutdown path as explicit shutdown and is
+idempotent.
+
+##### 2.6 Python discovery and verification
+
+Discovery is deterministic and deduplicates candidates by canonical executable
+path:
+
+1. Explicit configured executable.
+2. Project `.venv` executable (`.venv/bin/python` or
+   `.venv/Scripts/python.exe`).
+3. `python3` then `python` on Unix `PATH`; `python.exe` then `python3.exe` on
+   Windows `PATH`.
+
+If an explicit path is configured, return its valid or invalid profile and do
+not silently replace it with another interpreter. Without explicit
+configuration, return every distinct viable project/PATH candidate in
+precedence order. Phase 2 does not scan conda, pyenv, Homebrew, the Windows
+registry, WSL distributions, or arbitrary conventional directories.
+
+Do not pre-check and then execute candidates. Run one bounded standard-library
+probe through the exact candidate and classify spawn errors directly, avoiding
+a time-of-check/time-of-use race. The probe prints one JSON object containing:
+
+- canonical `sys.executable`;
+- Python implementation/version and architecture;
+- `sys.prefix` and `sys.base_prefix`;
+- platform;
+- versions or absence of `jupyter_client`, `ipykernel`, `matplotlib`, `numpy`,
+  and `pandas`.
+
+Verification accepts a `ComputeLaunchRequest`, calls `prepareLaunch`, then runs
+a bounded bridge self-check and starts a real kernel from that exact launch
+plan. The transport independently calls `prepareLaunch` with the same request;
+tests require equal executable, arguments, canonical working directory, and
+sanitization result. Only explicitly session-owned temporary paths may differ
+between the two plans. Readiness requires:
+
+- CPython 3.10 or newer;
+- importable `jupyter_client` 8.6 or newer;
+- importable `ipykernel` 6.29 or newer;
+- successful kernel startup and `kernel_info_request`;
+- Python language identity returned by the kernel.
+
+These minimums reflect APIs used by the bridge. Do not add an upper version
+bound without evidence. A newer environment is accepted only after the
+capability/startup probe succeeds. Missing modules, unsupported versions,
+wrong architecture, timeout, malformed probe output, and startup failure map
+to distinct actionable verification messages. Verification never runs
+`pip`, writes into the environment, registers a kernelspec, or imports large
+scientific packages merely to discover their versions.
+
+The environment fingerprint includes executable identity, Python
+implementation/version, prefix, and the discovered versions or absence of
+required bridge/kernel distributions. It is provenance, not a safe
+verification-cache key: package contents can change without changing the
+interpreter executable. Phase 2 does not cache verification. Phase 3 must
+either reverify before session launch or define a stronger invalidation proof.
+
+##### 2.7 Launch and environment policy
+
+The selected executable launches the checked-in bridge by absolute path:
+
+```text
+<selected-python> -I -u <absolute-bridge-path>
+```
+
+`-I` prevents project-controlled `PYTHONPATH`, user site packages, and current
+directory imports from changing bridge code resolution. The selected
+environment still supplies `jupyter_client`, `ipykernel`, and the kernel's
+normal site packages. The bridge starts `sys.executable -m ipykernel_launcher`
+directly through `jupyter_client`; it does not select a global kernelspec.
+
+`ComputeEnvironmentPolicy` builds a complete environment and the process layer
+uses `extendEnv: false`. It:
+
+- preserves ordinary OS/runtime variables needed by Python, native numerical
+  libraries, locale, temporary directories, GPU drivers, and user package
+  configuration;
+- removes all known Scient/T3 pairing, cloud, provider, updater, telemetry,
+  signing, publication, and service credentials by exact key and owned prefix;
+- removes `PYTHONPATH`, `PYTHONHOME`, `PYTHONSTARTUP`, `PYTHONINSPECT`,
+  `JUPYTER_CONFIG_DIR`, `JUPYTER_PATH`, and IPython startup/profile overrides
+  from the bridge environment;
+- sets UTF-8/unbuffered behavior and an app-owned temporary connection-file
+  directory;
+- accepts only an absolute, canonical, caller-approved project root as `cwd`;
+  authorization happens before the adapter, while this layer rejects
+  malformed or noncanonical launch inputs;
+- never logs values and exposes only removed key names in test diagnostics.
+
+The exact denylist and prefix list are exported constants with table-driven
+tests. This is credential-hygiene defense in depth, not a sandbox. User code
+retains the filesystem, network, and process authority of the server account,
+and can read credentials stored elsewhere under that account.
+
+##### 2.8 Bridge concurrency and Jupyter correlation
+
+The Python bridge uses one `asyncio` event loop and
+`jupyter_client.AsyncKernelManager`/`AsyncKernelClient`. It has:
+
+- one framed-stdin command reader;
+- one serialized command dispatcher;
+- one shell-channel reader;
+- one IOPub-channel reader;
+- one heartbeat/liveness task;
+- one parent-connection watchdog;
+- one bounded outbound writer queue and one stdout writer.
+
+Only the stdout writer writes protocol bytes. Stderr receives bounded,
+single-line bridge diagnostics with no environment values, HMAC keys,
+connection-file contents, submitted code, or owner token.
+
+One execute is active at a time. The bridge records the Jupyter message ID
+returned by `execute` and maps it to the Scient execute request ID. For that
+message ID it tracks:
+
+- matching shell `execute_reply`;
+- matching IOPub `status: busy`;
+- matching IOPub `status: idle`;
+- whether an interrupt was requested;
+- whether an error was observed.
+
+Completion requires the matching shell reply and matching idle after busy.
+Shell and IOPub may arrive in either order. IOPub order is authoritative for
+output: output observed before matching idle is emitted before completion.
+Same-parent output received after completion remains correlated only while its
+mapping is retained. Completed mappings are removed after 30 seconds or when
+64 newer completed mappings exist, whichever comes first. Output arriving
+later follows the unknown-parent rule and cannot reopen the execution.
+Parentless output is emitted with null request ID. Messages for unknown parent
+IDs are ignored only when they are documented kernel-global chatter;
+otherwise they become bounded session-level `runtime-warning` events, never
+output attributed to the active execution.
+
+Map Jupyter messages as follows:
+
+- `stream` → stream output after UTF-8/text and per-event bounds.
+- `error` → one raw runtime error report; the TypeScript Python adapter
+  normalizes it.
+- `execute_result` and `display_data` → first valid `image/png`, otherwise
+  bounded `text/plain`; ignore HTML, SVG, JavaScript, widgets, comms, and
+  unknown MIME in Phase 2.
+- `update_display_data` and `clear_output` → bounded `runtime-warning` events
+  and safe fallback behavior only; mutable display semantics are deferred.
+- `input_request` → immediately answer EOF/unsupported according to
+  `jupyter_client` API and emit `input-unsupported`; never wait for a client.
+
+Execution outcome is `failed` when `execute_reply.status == "error"` or a
+matching error is observed, `cancelled` when the active request reaches idle
+after an acknowledged interrupt/`KeyboardInterrupt`, and `succeeded`
+otherwise. Inconsistent reply/error states fail the execution conservatively
+and emit a `runtime-warning`; they do not fail the session unless protocol
+integrity or kernel liveness is lost.
+
+##### 2.9 Interrupt, restart, shutdown, and loss
+
+**Interrupt**
+
+1. Return `interrupt-result: terminal` as a no-op if no execution is active,
+   preserving the neutral completion-race behavior. Reject only when a
+   different execution is active.
+2. Call the kernel manager interrupt API for the matching active execution.
+3. Emit `interrupt-result: interrupted` when the signal is delivered, or
+   `terminal` if completion won the race. Rejection or a 10-second response
+   timeout fails the interrupt call without inventing a second request ID.
+4. Continue correlating the active request's reply-plus-idle.
+5. Complete the execute request as `cancelled` when interruption is observed.
+6. If idle does not return within 10 seconds, report unresponsive and leave
+   destructive restart to the caller; do not silently replace the namespace.
+
+The integration proof sets a variable before an infinite loop and confirms it
+still exists after `KeyboardInterrupt`.
+
+**Restart**
+
+1. Accept only `nextGeneration == currentGeneration + 1`.
+2. Stop accepting execute/interrupt commands.
+3. Terminate the old kernel through `restart_kernel(now=True)`.
+4. After controlled old-kernel termination is confirmed, emit any active
+   execute's terminal `execution-complete: cancelled`.
+5. Recreate channels, wait for ready, obtain and report the new PID.
+6. Clear all old parent/request mappings.
+7. Emit `restarted` only after the replacement answers `kernel_info_request`.
+
+If restart fails, terminate any replacement process and fail the channel. If
+the old kernel dies before the transport can prove controlled replacement, the
+active execution is lost with the channel rather than falsely cancelled.
+
+**Shutdown**
+
+1. Stop accepting commands.
+2. Request kernel shutdown and wait up to 5 seconds.
+3. Force-kill the kernel through the manager if still alive.
+4. After controlled kernel termination is confirmed, emit any active
+   execute's terminal `execution-complete: cancelled`.
+5. Stop channels and remove connection files/directories.
+6. Verify the recorded kernel PID is no longer alive.
+7. Emit `shutdown-complete`, flush stdout, and exit zero.
+
+Node waits for `shutdown-complete`, clean protocol EOF, and bridge exit.
+Missing any one of these triggers process-tree cancellation and a shutdown
+error. Repeated shutdown/finalization is idempotent.
+
+**Loss**
+
+Unexpected bridge exit, protocol failure, heartbeat failure, kernel death,
+unrecoverable channel error, or command-write failure fails the event stream
+exactly once with a bounded reason. The transport cancels the owned process
+tree, waits for exit, closes the event queue, and preserves the first failure
+as primary while logging later cleanup failures as causes.
+
+Stdin EOF is the parent-death signal. The bridge watchdog performs the same
+kernel cleanup as shutdown but cannot claim an orderly protocol exchange.
+This covers normal parent exit and server crash without polling parent PIDs.
+
+##### 2.10 Output and diagnostic limits
+
+Phase 2 enforces limits before Phase 3 retention:
+
+| Value                         |         Limit |
+| ----------------------------- | ------------: |
+| Submitted code                |   1 MiB UTF-8 |
+| Wire frame                    |        16 MiB |
+| Stream event                  | 256 KiB UTF-8 |
+| Traceback lines               |           200 |
+| Traceback line                |         4 KiB |
+| Error name                    |     256 bytes |
+| Error value                   |        16 KiB |
+| PNG decoded bytes             |         8 MiB |
+| Bridge stderr retained tail   |        64 KiB |
+| Transport event queue         |    256 events |
+| Transport event queue payload |        32 MiB |
+| Bridge outbound queue         |     64 frames |
+| Bridge outbound queue payload |        24 MiB |
+
+The 8 MiB binary limit base64-encodes below 11 MiB, leaving more than 5 MiB for
+the JSON envelope and framing under the 16 MiB wire limit. Queue admission
+accounts for encoded frame bytes on the bridge and decoded event payload bytes
+in Node; count and byte capacity must both be available. Oversized text is
+truncated on Unicode boundaries with an explicit `output-truncated` event. An
+oversized image is dropped with the same event and bounded detail; it is never
+partially decoded. Node, not Python, computes the trusted image hash and
+optionally reads PNG dimensions with a bounded, dependency-free header parser.
+Width/height remain null when not safely available.
+
+Python traceback normalization strips ANSI/control sequences, bounds every
+field, preserves the human-readable traceback, and extracts no filesystem
+authority from traceback strings. Phase 2 does not attempt source mapping or
+path authorization; Phase 3 can enrich frames against an authorized project.
+
+##### 2.11 Test strategy
+
+All mandatory unit tests run without Python:
+
+- envelope payload schemas for every message type and direction;
+- wrong version/session/generation/token/type/request/sequence;
+- golden Jupyter-to-Scient fixtures for stream, result, PNG, error, busy/idle,
+  parentless output, input request, and ignored MIME;
+- shell-reply-before-idle and idle-before-shell-reply;
+- duplicate/late/unknown parent messages and mapping expiry;
+- count- and byte-bounded writer/event queues and slow-consumer failure;
+- malformed, oversized, truncated, and valid-multi-frame protocol streams;
+- stderr flood while stdout is active;
+- configured/project/PATH discovery precedence and canonical deduplication;
+- probe timeout, spawn failure, malformed output, versions, and missing
+  requirements;
+- exact environment removals, clean-environment spawn, and no value logging;
+- Python diagnostic normalization and all limits;
+- transport finalizer races across startup, execute, interrupt, restart,
+  shutdown, and process exit.
+
+The bridge's standard-library tests fake the kernel manager and channels to
+cover command validation, correlation, queue bounds, cleanup ordering, and EOF
+watchdog behavior. They must not require ZeroMQ or a kernel.
+
+`PythonKernel.integration.test.ts` runs only when a dedicated interpreter is
+supplied through `SCIENT_TEST_PYTHON` or when the repository's test bootstrap
+has provisioned a known fixture environment. It must not opportunistically use
+an arbitrary developer Python and then produce non-reproducible failures.
+When enabled, it proves:
+
+1. start and identity/PID reporting;
+2. `1 + 1`;
+3. `x = 41`, then `x + 1`;
+4. stdout, stderr, exception, and traceback;
+5. one Matplotlib PNG with verified signature/hash;
+6. interrupt of an infinite loop with prior namespace intact;
+7. restart with old namespace absent and a different live kernel PID;
+8. bridge crash and kernel crash produce loss;
+9. graceful shutdown removes bridge, kernel, and connection files;
+10. forced cancellation leaves both recorded PIDs dead.
+
+Cross-platform CI must provision this fixture on macOS, Windows, and Linux
+before the Phase 2 exit gate can pass. Local absence may skip only the real
+kernel suite with a visible reason; it may not skip protocol, bridge-unit, or
+adapter tests.
+
+##### 2.12 Implementation sequence and review gates
+
+Land Phase 2 as one coherent branch, but implement and review in these
+independently verifiable steps:
+
+1. **Neutral amendments:** environment inheritance, transient image bytes,
+   launch-context verification, and runtime warnings, with
+   package/process/simulator tests.
+2. **Protocol:** closed schemas, direction/state validation, golden fixtures,
+   sequence and ownership checks.
+3. **Environment and adapter:** bounded discovery/probe, verification,
+   fingerprint, launch plan, sanitization, diagnostics.
+4. **Bridge core:** framing, handshake, fake-manager unit tests, parent EOF,
+   bounded writer, cleanup.
+5. **Jupyter behavior:** execute correlation, output normalization, interrupt,
+   restart, shutdown, heartbeat.
+6. **Transport:** Effect scope ownership, immediate stream drains, event queue,
+   command mapping, error and finalizer behavior.
+7. **Real-kernel proof:** state, image, interrupt, restart, crashes, process
+   liveness, connection-file cleanup on all three operating systems.
+8. **Boundary review:** dependency, seam, security, failure-semantics, and
+   no-scope-creep audit.
+
+Do not begin Phase 3 merely because the happy-path integration test passes.
+Phase 2 is complete only when:
+
+- all protocol inputs are schema-decoded and state-validated;
+- no user code runs before ownership/version/capability negotiation succeeds;
+- every command and event queue has count and aggregate-byte bounds;
+- both process streams drain from spawn and protocol EOF is finalized;
+- selected-environment verification and launch use the same path;
+- interrupt preserves state and restart clears it;
+- clean shutdown and forced failure leave no recorded process alive;
+- malformed input, bridge crash, and kernel crash produce one honest loss;
+- no environment value, submitted code, HMAC key, connection file, or owner
+  token appears in logs;
+- `@scientfactory/compute` remains Python/Jupyter/Node/server independent;
+- all new production files stay under the Scient-owned compute root, with only
+  the package dependency and seam manifest as inherited integration changes;
+- focused format, lint, package/server typecheck, unit, Python-unit,
+  real-kernel, seam, and `git diff --check` validations pass.
+
+Before implementation starts, a human must accept this ADR or explicitly
+approve Phase 2 against its proposed status. Packaging an app-owned Python
+runtime remains a separate decision. If the selected-environment proof is not
+reliable enough for release, Phase 2 reports that evidence rather than quietly
+expanding into a Python distribution project.
+
 ---
 
 ### Phase 3: Session service and durable record

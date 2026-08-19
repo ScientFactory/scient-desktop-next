@@ -169,7 +169,12 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
                   Effect.forEach(
                     scripted.outputs,
                     (output) =>
-                      emit({ _tag: "output", requestId: executeRequest.requestId, output }),
+                      emit({
+                        _tag: "output",
+                        requestId: executeRequest.requestId,
+                        output,
+                        image: null,
+                      }),
                     { discard: true },
                   ),
                 ),

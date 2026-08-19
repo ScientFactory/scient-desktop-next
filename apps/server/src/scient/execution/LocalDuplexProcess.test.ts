@@ -110,6 +110,57 @@ describe("LocalDuplexProcess", () => {
     ).pipe(Effect.provide(Live)),
   );
 
+  it.effect("does not extend the host environment when extendEnv is false", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* Effect.flatMap(DuplexProcess, (processes) =>
+          processes.start({
+            processId: DuplexProcessId.make("duplex-extend-env-false"),
+            executable: NodeProcess.execPath,
+            args: ["-e", "process.stdout.write(process.env.PATH ? 'present' : 'absent')"],
+            cwd: NodeProcess.cwd(),
+            environment: {},
+            extendEnv: false,
+          }),
+        );
+
+        const line = yield* handle.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(line).toBe("absent");
+        yield* handle.cancelProcessTree;
+      }),
+    ).pipe(Effect.provide(Live)),
+  );
+
+  it.effect("extends the host environment by default", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* Effect.flatMap(DuplexProcess, (processes) =>
+          processes.start({
+            processId: DuplexProcessId.make("duplex-extend-env-default"),
+            executable: NodeProcess.execPath,
+            args: ["-e", "process.stdout.write(process.env.PATH ? 'present' : 'absent')"],
+            cwd: NodeProcess.cwd(),
+            environment: {},
+          }),
+        );
+
+        const line = yield* handle.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runHead,
+          Effect.map(Option.getOrThrow),
+        );
+        expect(line).toBe("present");
+        yield* handle.cancelProcessTree;
+      }),
+    ).pipe(Effect.provide(Live)),
+  );
+
   it.effect("cancels a spawned descendant with the owned process tree", () =>
     Effect.scoped(
       Effect.gen(function* () {

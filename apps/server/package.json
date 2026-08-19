@@ -33,6 +33,7 @@
     "@pierre/diffs": "catalog:",
     "@scientfactory/analysis": "workspace:*",
     "@scientfactory/analytics": "workspace:*",
+    "@scientfactory/compute": "workspace:*",
     "@scientfactory/document-artifacts": "workspace:*",
     "@scientfactory/execution": "workspace:*",
     "@scientfactory/pdf-validation": "workspace:*",

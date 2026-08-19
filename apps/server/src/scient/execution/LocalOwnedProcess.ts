@@ -5,6 +5,14 @@ export interface LocalOwnedProcessRequest {
   readonly args: ReadonlyArray<string>;
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
+  /**
+   * Whether to merge the host environment into `environment`. Defaults to
+   * `true` for backward compatibility. Compute launches pass a complete
+   * sanitized environment with `extendEnv: false`; passing a sanitized record
+   * while the process layer silently re-adds the host environment is not
+   * sanitization.
+   */
+  readonly extendEnv?: boolean;
 }
 
 export const LOCAL_OWNED_PROCESS_KILL_OPTIONS = {
@@ -26,7 +34,7 @@ export function makeLocalOwnedProcess(
   return ChildProcess.make(request.executable, request.args, {
     cwd: request.cwd,
     env: request.environment,
-    extendEnv: true,
+    extendEnv: request.extendEnv ?? true,
     shell: false,
     detached: platform !== "win32",
     ...LOCAL_OWNED_PROCESS_KILL_OPTIONS,

@@ -118,6 +118,12 @@ export interface DuplexProcessRequest {
   readonly args: ReadonlyArray<string>;
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
+  /**
+   * Whether to merge the host environment into `environment`. Defaults to
+   * `true`. Compute launches pass a complete sanitized environment with
+   * `extendEnv: false`.
+   */
+  readonly extendEnv?: boolean;
 }
 
 export class DuplexProcessError extends Schema.TaggedErrorClass<DuplexProcessError>()(

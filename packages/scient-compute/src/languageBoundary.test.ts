@@ -62,9 +62,9 @@ const fakeRAdapter: ComputeLanguageAdapter = {
         ? [profile]
         : [{ ...profile, source: "configured", executable: request.configuredExecutable }],
     ),
-  verify: (candidate) =>
+  verify: (request) =>
     Effect.succeed({
-      profile: candidate,
+      profile: request.profile,
       readiness: "ready",
       missingRequirements: [],
       message: null,
@@ -109,7 +109,11 @@ describe("compute language boundary", () => {
           projectRoot: "/project",
           configuredExecutable: null,
         });
-        const verification = yield* fakeRAdapter.verify(discovered!);
+        const verification = yield* fakeRAdapter.verify({
+          profile: discovered!,
+          cwd: "/project",
+          environment: { LANG: "C" },
+        });
         expect(verification.readiness).toBe("ready");
 
         const fingerprint = yield* fakeRAdapter.fingerprintEnvironment(discovered!);
@@ -183,6 +187,7 @@ describe("compute language boundary", () => {
           _tag: "output",
           requestId: firstRequest,
           output: textOutput(1, "42\n"),
+          image: null,
         });
         const completed = yield* next;
         expect(completed).toEqual({

@@ -132,6 +132,7 @@ export const ComputeSystemEvent = Schema.Literals([
   "session-lost",
   "output-truncated",
   "input-unsupported",
+  "runtime-warning",
 ]);
 export type ComputeSystemEvent = typeof ComputeSystemEvent.Type;
 
@@ -208,12 +209,29 @@ export const ComputeRuntimeIdentity = Schema.Struct({
 export type ComputeRuntimeIdentity = typeof ComputeRuntimeIdentity.Type;
 
 /**
+ * Transient binary image bytes carried alongside durable image metadata.
+ *
+ * `ComputeOutput.image` is durable metadata with no bytes; this type carries
+ * the validated `Uint8Array` so Phase 3 can consume it into compute-owned
+ * storage. It is never persisted: base64 and multi-megabyte byte arrays do not
+ * belong in durable snapshots.
+ */
+export const ComputeTransportImageEvent = Schema.Struct({
+  bytes: Schema.Uint8Array,
+});
+export type ComputeTransportImageEvent = typeof ComputeTransportImageEvent.Type;
+
+/**
  * Everything a transport reports, in the order it happened.
  *
  * `output` carries a null `requestId` for output that belongs to the session
  * rather than to a command, which is what asynchronous runtime chatter is.
  * Attributing it to whichever execution happens to be running would put one
  * user's stray thread output inside another user's cell.
+ *
+ * `image` carries transient bytes only when `output` is an image; it is null
+ * for every other output variant. The bytes are consumed once and never
+ * persisted.
  */
 export const ComputeTransportEvent = Schema.Union([
   Schema.TaggedStruct("ready", {
@@ -226,6 +244,7 @@ export const ComputeTransportEvent = Schema.Union([
   Schema.TaggedStruct("output", {
     requestId: Schema.NullOr(ComputeRequestId),
     output: ComputeOutput,
+    image: Schema.NullOr(ComputeTransportImageEvent),
   }),
   Schema.TaggedStruct("completed", {
     requestId: ComputeRequestId,
@@ -414,7 +433,7 @@ export interface ComputeLanguageAdapter {
     request: ComputeDiscoveryRequest,
   ) => Effect.Effect<ReadonlyArray<ComputeRuntimeProfile>, ComputeRuntimeError>;
   readonly verify: (
-    profile: ComputeRuntimeProfile,
+    request: ComputeLaunchRequest,
   ) => Effect.Effect<ComputeRuntimeVerification, ComputeRuntimeError>;
   readonly prepareLaunch: (
     request: ComputeLaunchRequest,

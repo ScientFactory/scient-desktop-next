@@ -482,6 +482,9 @@ importers:
       '@scientfactory/analytics':
         specifier: workspace:*
         version: link:../../packages/scient-analytics
+      '@scientfactory/compute':
+        specifier: workspace:*
+        version: link:../../packages/scient-compute
       '@scientfactory/document-artifacts':
         specifier: workspace:*
         version: link:../../packages/scient-document-artifacts

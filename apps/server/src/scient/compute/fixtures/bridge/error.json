@@ -1,0 +1,17 @@
+{
+  "protocolVersion": 1,
+  "type": "error",
+  "sessionId": "session-golden",
+  "generation": 1,
+  "requestId": "request-1",
+  "sequence": 2,
+  "payload": {
+    "name": "ValueError",
+    "value": "invalid literal for int() with base 10: 'abc'",
+    "traceback": [
+      "  File \"<string>\", line 1, in <module>",
+      "    int('abc')",
+      "ValueError: invalid literal for int() with base 10: 'abc'"
+    ]
+  }
+}

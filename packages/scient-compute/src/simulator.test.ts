@@ -298,6 +298,52 @@ describe("simulated compute transport", () => {
     ),
   );
 
+  it.effect("emits output events with null image bytes", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const channel = yield* openSimulated(() => ({
+          _tag: "completes",
+          outputs: [
+            {
+              _tag: "stream",
+              sequence: 0,
+              observedAt: "2026-08-18T00:00:00.000Z",
+              stream: "stdout",
+              text: "hi\n",
+            },
+          ],
+          outcome: "succeeded",
+        }));
+        const events = yield* observe(channel);
+        yield* events.next;
+
+        yield* channel.execute({
+          requestId,
+          expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          code: "greet()",
+        });
+        expect(yield* events.next).toEqual({ _tag: "accepted", requestId });
+        expect(yield* events.next).toEqual({
+          _tag: "output",
+          requestId,
+          output: {
+            _tag: "stream",
+            sequence: 0,
+            observedAt: "2026-08-18T00:00:00.000Z",
+            stream: "stdout",
+            text: "hi\n",
+          },
+          image: null,
+        });
+        expect(yield* events.next).toEqual({
+          _tag: "completed",
+          requestId,
+          outcome: "succeeded",
+        });
+      }),
+    ),
+  );
+
   it.effect("reports a runtime that disappeared and then answers nothing", () =>
     Effect.scoped(
       Effect.gen(function* () {
