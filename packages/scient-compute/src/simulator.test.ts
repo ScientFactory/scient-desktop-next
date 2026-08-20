@@ -125,6 +125,112 @@ describe("simulated compute transport", () => {
     ),
   );
 
+  it.effect("hands image bytes over once, beside the metadata that describes them", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+        const channel = yield* openSimulated(() => ({
+          _tag: "completes",
+          outputs: [
+            {
+              _tag: "image",
+              sequence: 4,
+              observedAt: "2026-08-19T00:00:00.000Z",
+              mediaType: "image/png",
+              contentHash: "sha256:abc",
+              byteLength: bytes.byteLength,
+              width: 1,
+              height: 1,
+            },
+          ],
+          outcome: "succeeded",
+          imageBytes: new Map([[4, bytes]]),
+        }));
+        const events = yield* observe(channel);
+        yield* events.next;
+        yield* channel.execute({
+          requestId,
+          expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          code: "plot()",
+        });
+
+        expect(yield* events.next).toMatchObject({ _tag: "accepted" });
+        expect(yield* events.next).toMatchObject({
+          _tag: "output",
+          image: { bytes },
+          output: { _tag: "image", sequence: 4 },
+        });
+        expect(yield* events.next).toMatchObject({ _tag: "completed", outcome: "succeeded" });
+      }),
+    ),
+  );
+
+  it.effect("reports the raw error and the end of the execution as two facts", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const channel = yield* openSimulated(() => ({
+          _tag: "completes",
+          outputs: [],
+          outcome: "failed",
+          runtimeError: {
+            sequence: 2,
+            observedAt: "2026-08-19T00:00:00.000Z",
+            report: { name: "ValueError", value: "bad input", traceback: ["Traceback ..."] },
+          },
+        }));
+        const events = yield* observe(channel);
+        yield* events.next;
+        yield* channel.execute({
+          requestId,
+          expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          code: "raise ValueError",
+        });
+
+        expect(yield* events.next).toMatchObject({ _tag: "accepted" });
+        expect(yield* events.next).toEqual({
+          _tag: "runtime-error",
+          sequence: 2,
+          observedAt: "2026-08-19T00:00:00.000Z",
+          requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+          report: { name: "ValueError", value: "bad input", traceback: ["Traceback ..."] },
+        });
+        expect(yield* events.next).toMatchObject({ _tag: "completed", outcome: "failed" });
+      }),
+    ),
+  );
+
+  it.effect("says whether an interrupt had anything left to stop", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const channel = yield* openSimulated(() => ({
+          _tag: "runs-until-interrupted",
+          outputs: [],
+        }));
+        yield* channel.execute({
+          requestId,
+          expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          code: "sleep()",
+        });
+
+        expect(
+          yield* channel.interrupt({
+            requestId,
+            expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          }),
+        ).toBe("interrupted");
+        // The same request a second time: the execution it named is over, and
+        // saying so is not the same as saying the interrupt worked.
+        expect(
+          yield* channel.interrupt({
+            requestId,
+            expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          }),
+        ).toBe("terminal");
+      }),
+    ),
+  );
+
   it.effect("ends work that a restart destroyed the namespace of", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -134,7 +240,7 @@ describe("simulated compute transport", () => {
         }));
         const events = yield* observe(channel);
         yield* events.next;
-        let status: ComputeExecutionStatus = transitionComputeExecutionStatus(
+        let status: ComputeExecutionStatus = yield* transitionComputeExecutionStatus(
           "queued",
           "submitting",
         );
@@ -143,17 +249,26 @@ describe("simulated compute transport", () => {
           expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
           code: "sleep()",
         });
-        expect(yield* events.next).toEqual({ _tag: "accepted", requestId });
-        status = transitionComputeExecutionStatus(status, "running");
+        expect(yield* events.next).toEqual({
+          _tag: "accepted",
+          requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+        });
+        status = yield* transitionComputeExecutionStatus(status, "running");
 
         yield* channel.restart({
           expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
           nextGeneration: ComputeSessionGeneration.make(2),
         });
 
-        expect(yield* events.next).toEqual({ _tag: "completed", requestId, outcome: "cancelled" });
-        status = transitionComputeExecutionStatus(status, "cancelled");
-        expect(yield* events.next).toEqual({ _tag: "restarted", generation: 2 });
+        expect(yield* events.next).toEqual({
+          _tag: "completed",
+          requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+          outcome: "cancelled",
+        });
+        status = yield* transitionComputeExecutionStatus(status, "cancelled");
+        expect(yield* events.next).toEqual({ _tag: "restarted", generation: 2, runtime });
         expect(status).toBe("cancelled");
       }),
     ),
@@ -270,10 +385,15 @@ describe("simulated compute transport", () => {
           expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
           code: "fast()",
         });
-        expect(yield* events.next).toEqual({ _tag: "accepted", requestId });
+        expect(yield* events.next).toEqual({
+          _tag: "accepted",
+          requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+        });
         expect(yield* events.next).toEqual({
           _tag: "completed",
           requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
           outcome: "succeeded",
         });
 
@@ -288,10 +408,15 @@ describe("simulated compute transport", () => {
           expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
           code: "next()",
         });
-        expect(yield* events.next).toEqual({ _tag: "accepted", requestId: nextRequestId });
+        expect(yield* events.next).toEqual({
+          _tag: "accepted",
+          requestId: nextRequestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+        });
         expect(yield* events.next).toEqual({
           _tag: "completed",
           requestId: nextRequestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
           outcome: "succeeded",
         });
       }),
@@ -322,10 +447,15 @@ describe("simulated compute transport", () => {
           expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
           code: "greet()",
         });
-        expect(yield* events.next).toEqual({ _tag: "accepted", requestId });
+        expect(yield* events.next).toEqual({
+          _tag: "accepted",
+          requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+        });
         expect(yield* events.next).toEqual({
           _tag: "output",
           requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
           output: {
             _tag: "stream",
             sequence: 0,
@@ -338,6 +468,7 @@ describe("simulated compute transport", () => {
         expect(yield* events.next).toEqual({
           _tag: "completed",
           requestId,
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
           outcome: "succeeded",
         });
       }),

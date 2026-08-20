@@ -7,6 +7,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schedule from "effect/Schedule";
 import * as Stream from "effect/Stream";
 
 import { DuplexProcess, layer } from "./LocalDuplexProcess.ts";
@@ -32,6 +33,20 @@ const echoFixture = [
   "  }",
   "});",
   "setInterval(() => {}, 1000);",
+].join("\n");
+
+/**
+ * Writes a bounded burst of lines ending in a marker, then exits at once.
+ *
+ * The burst fits in the operating-system pipe buffer, so the process is gone
+ * before a consumer reads anything: the marker proves the tail of that
+ * buffered output still reaches the consumer after the exit is observed.
+ */
+const burstThenExitFixture = [
+  "const lines = [];",
+  "for (let index = 0; index < 2000; index += 1) lines.push('line:' + index);",
+  "lines.push('done');",
+  "process.stdout.write(lines.join('\\n') + '\\n');",
 ].join("\n");
 
 /** Echoes one message containing every possible byte, without text decoding. */
@@ -93,6 +108,42 @@ describe("LocalDuplexProcess", () => {
         );
 
         expect(echoed).toEqual([...payload]);
+      }),
+    ).pipe(Effect.provide(Live)),
+  );
+
+  it.effect("delivers output buffered before the process exited", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* startFixture("duplex-burst-then-exit-test", burstThenExitFixture);
+
+        // Observe the exit first, so the stream is only read once the writer is
+        // provably gone and every byte is already sitting in the pipe.
+        expect(yield* handle.exitCode).toBe(0);
+
+        const lines = yield* handle.stdout.pipe(
+          Stream.decodeText(),
+          Stream.splitLines,
+          Stream.runCollect,
+        );
+
+        expect(lines.length).toBe(2001);
+        expect(lines[0]).toBe("line:0");
+        expect(lines[2000]).toBe("done");
+      }),
+    ).pipe(Effect.provide(Live)),
+  );
+
+  it.effect("treats an already-stopped process tree as cancelled", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const handle = yield* startFixture("duplex-cancel-after-exit-test", "");
+        expect(yield* handle.exitCode).toBe(0);
+
+        // Cancelling a tree that is already gone is the expected outcome of a
+        // scope closing after a peer shut itself down, and it stays repeatable.
+        yield* handle.cancelProcessTree;
+        yield* handle.cancelProcessTree;
       }),
     ).pipe(Effect.provide(Live)),
   );
@@ -177,6 +228,14 @@ describe("LocalDuplexProcess", () => {
 
         yield* handle.cancelProcessTree;
 
+        // `cancelProcessTree` waits for the direct child; the descendant is
+        // reaped by init a moment later, so poll rather than sample once.
+        yield* Effect.retry(
+          Effect.suspend(() =>
+            processExists(childPid) ? Effect.fail("descendant still running") : Effect.void,
+          ),
+          { times: 50, schedule: Schedule.spaced("20 millis") },
+        );
         expect(processExists(childPid)).toBe(false);
       }),
     ).pipe(Effect.provide(Live)),

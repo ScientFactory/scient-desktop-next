@@ -18,3 +18,10 @@ export const descendantFixture = [
   "process.stdout.write(String(child.pid) + '\\n');",
   "setInterval(() => {}, 1000);",
 ].join("\n");
+
+/** Spawns a descendant, reports its PID, and exits successfully immediately. */
+export const successfulParentWithDescendantFixture = [
+  "const { spawn } = require('node:child_process');",
+  "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+  "process.stdout.write(String(child.pid) + '\\n', () => process.exit(0));",
+].join("\n");

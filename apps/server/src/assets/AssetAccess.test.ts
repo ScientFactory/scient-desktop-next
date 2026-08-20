@@ -14,6 +14,7 @@ import {
   LogicalDocumentKey,
   ProducingOperationId,
 } from "@scientfactory/document-artifacts";
+import { ComputeExecutionId, ComputeProjectId, ComputeSessionId } from "@scientfactory/compute";
 import { AssetPreviewTypeValidationError, EnvironmentFilePath, ThreadId } from "@t3tools/contracts";
 import { ExecutionRunId } from "@scientfactory/execution";
 import { PROJECT_FAVICON_FALLBACK_MARKER } from "@t3tools/shared/projectFavicon";
@@ -107,6 +108,108 @@ describe("AssetAccess", () => {
       expect(yield* resolveAsset(token, "figure-002.svg")).toBeNull();
       expect(yield* resolveAsset(token, "../figure-001.svg")).toBeNull();
     }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("issues exact immutable URLs for compute session outputs", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outputPath = path.join(
+        config.computeDir,
+        "sessions",
+        "project-1",
+        "session-1",
+        "outputs",
+        "figure.png",
+      );
+      yield* fileSystem.makeDirectory(path.dirname(outputPath), { recursive: true });
+      yield* fileSystem.writeFileString(outputPath, "PNG");
+      const resource = {
+        _tag: "compute-output" as const,
+        projectId: ComputeProjectId.make("project-1"),
+        sessionId: ComputeSessionId.make("session-1"),
+        executionId: ComputeExecutionId.make("execution-1"),
+        contentHash: `sha256:${"a".repeat(64)}`,
+      };
+      const result = yield* issueAssetUrl({
+        resource,
+        computeOutput: {
+          path: outputPath,
+          fileName: "figure.png",
+          mediaType: "image/png",
+          contentHash: resource.contentHash,
+          byteLength: 3,
+          revision: { size: 3, mtimeMs: null },
+        },
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const token = suffix.slice(0, suffix.indexOf("/"));
+
+      expect(yield* resolveAsset(token, "figure.png")).toEqual({
+        kind: "file",
+        path: yield* fileSystem.realPath(outputPath),
+        revision: { size: 3, mtimeMs: null },
+      });
+      expect(yield* resolveAsset(token, "other.png")).toBeNull();
+      expect(yield* resolveAsset(token, "../figure.png")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
+  it.effect("refuses to sign a compute output it was not asked for", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const outputPath = path.join(config.computeDir, "sessions", "project-1", "held.png");
+      yield* fileSystem.makeDirectory(path.dirname(outputPath), { recursive: true });
+      yield* fileSystem.writeFileString(outputPath, "PNG");
+      const outside = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-compute-outside-",
+      });
+      const outsidePath = path.join(outside, "elsewhere.png");
+      yield* fileSystem.writeFileString(outsidePath, "PNG");
+      const resource = {
+        _tag: "compute-output" as const,
+        projectId: ComputeProjectId.make("project-1"),
+        sessionId: ComputeSessionId.make("session-1"),
+        executionId: null,
+        contentHash: `sha256:${"b".repeat(64)}`,
+      };
+      const resolved = {
+        path: outputPath,
+        fileName: "held.png",
+        mediaType: "image/png" as const,
+        contentHash: resource.contentHash,
+        byteLength: 3,
+        revision: { size: 3, mtimeMs: null },
+      };
+
+      // A resolution for a different image is the wrong image, however well it
+      // resolved.
+      const mismatched = yield* Effect.flip(
+        issueAssetUrl({
+          resource,
+          computeOutput: { ...resolved, contentHash: `sha256:${"c".repeat(64)}` },
+        }),
+      );
+      expect(mismatched._tag).toBe("AssetComputeOutputNotFoundError");
+
+      // Containment is re-established here, so a caller that resolved a path
+      // outside the compute directory cannot borrow this signature for it.
+      const escaped = yield* Effect.flip(
+        issueAssetUrl({
+          resource,
+          computeOutput: { ...resolved, path: outsidePath, fileName: "elsewhere.png" },
+        }),
+      );
+      expect(escaped._tag).toBe("AssetComputeOutputNotFoundError");
+
+      // Nothing was signed, so nothing is missing: the same resolution issued
+      // honestly still works.
+      const issued = yield* issueAssetUrl({ resource, computeOutput: resolved });
+      expect(issued.relativeUrl).toContain(ASSET_ROUTE_PREFIX);
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
   it.effect("issues workspace URLs that resolve the entry file and sibling assets", () =>

@@ -135,7 +135,10 @@ import * as GeneratedDocumentStore from "./scient/documentArtifacts/GeneratedDoc
 import * as AnalysisService from "./scient/analysis/AnalysisService.ts";
 import * as LocalAnalysisStore from "./scient/analysis/LocalAnalysisStore.ts";
 import * as AnalysisRunIndex from "./scient/analysis/AnalysisRunIndex.ts";
+import * as LocalDuplexProcess from "./scient/execution/LocalDuplexProcess.ts";
 import * as LocalExecutionProcess from "./scient/execution/LocalExecutionProcess.ts";
+import * as LocalComputeStore from "./scient/compute/LocalComputeStore.ts";
+import * as PythonComputeRuntime from "./scient/compute/PythonComputeRuntime.ts";
 import * as LatexBuildService from "./scient/latex/LatexBuildService.ts";
 import * as LatexManagedToolchain from "./scient/latex/LatexManagedToolchain.ts";
 import * as LatexPackageInstaller from "./scient/latex/LatexPackageInstaller.ts";
@@ -498,6 +501,16 @@ const AnalysisServiceLive = AnalysisService.layer.pipe(
   Layer.provide(LocalExecutionProcess.layer),
 );
 
+// The compute session service owns both process ports: one-shot for the
+// interpreter probe, duplex for the bridge it talks to. The store is mounted
+// here rather than inside the service so the disk that holds a session's
+// history has one owner for the life of the server.
+const ComputeSessionServiceLive = PythonComputeRuntime.layer.pipe(
+  Layer.provide(LocalComputeStore.layer),
+  Layer.provide(LocalExecutionProcess.layer),
+  Layer.provide(LocalDuplexProcess.layer),
+);
+
 // The build coordinator owns its execution port the way the analysis runtime
 // does; the toolchain probe is merged out because the HTTP group reads it too,
 // and the managed installer sits on top of the probe so a finished install can
@@ -541,6 +554,7 @@ export const makeRoutesLayer = Layer.mergeAll(
   // and mutations observed on WebSocket invalidate patches subsequently read over HTTP.
   Layer.provide(PullRequestServiceLive),
   Layer.provide(AnalysisServiceLive),
+  Layer.provide(ComputeSessionServiceLive),
   Layer.provide(ScientLatexServicesLive),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer),

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 
 import {
   ComputeSessionGeneration,
@@ -46,54 +47,68 @@ const LEGAL: ReadonlyArray<readonly [ComputeSessionStatus, ComputeSessionStatus]
 const isLegal = (current: ComputeSessionStatus, next: ComputeSessionStatus): boolean =>
   LEGAL.some(([from, to]) => from === current && to === next);
 
+const transition = transitionComputeSessionStatus;
+
+// `flip` turns the refusal into the value under test, so a transition that
+// wrongly succeeds fails the test instead of being asserted about.
+const refusal = (
+  current: ComputeSessionStatus,
+  next: ComputeSessionStatus,
+): Effect.Effect<InvalidComputeSessionTransitionError, ComputeSessionStatus> =>
+  Effect.flip(transitionComputeSessionStatus(current, next));
+
 describe("compute session state machine", () => {
-  it("permits exactly the transitions the lifecycle allows", () => {
-    for (const current of STATUSES) {
-      for (const next of STATUSES) {
-        if (current === next) {
-          expect(transitionComputeSessionStatus(current, next)).toBe(current);
-          continue;
+  it.effect("permits exactly the transitions the lifecycle allows", () =>
+    Effect.gen(function* () {
+      for (const current of STATUSES) {
+        for (const next of STATUSES) {
+          if (current === next) {
+            expect(yield* transition(current, next)).toBe(current);
+            continue;
+          }
+          if (isLegal(current, next)) {
+            expect(yield* transition(current, next)).toBe(next);
+            continue;
+          }
+          expect((yield* refusal(current, next))._tag).toBe("InvalidComputeSessionTransitionError");
         }
-        if (isLegal(current, next)) {
-          expect(transitionComputeSessionStatus(current, next)).toBe(next);
-          continue;
+      }
+    }),
+  );
+
+  it.effect("walks a session that restarts and is then stopped", () =>
+    Effect.gen(function* () {
+      let status = yield* transition("starting", "ready");
+      status = yield* transition(status, "restarting");
+      status = yield* transition(status, "ready");
+      status = yield* transition(status, "stopping");
+      status = yield* transition(status, "stopped");
+
+      expect(status).toBe("stopped");
+    }),
+  );
+
+  it.effect("leaves every terminal status without a successor", () =>
+    Effect.gen(function* () {
+      for (const terminal of TERMINAL_COMPUTE_SESSION_STATUSES) {
+        for (const next of STATUSES) {
+          if (next === terminal) continue;
+          expect((yield* refusal(terminal, next)).current).toBe(terminal);
         }
-        expect(() => transitionComputeSessionStatus(current, next)).toThrow(
-          InvalidComputeSessionTransitionError,
-        );
       }
-    }
-  });
+    }),
+  );
 
-  it("walks a session that restarts and is then stopped", () => {
-    let status = transitionComputeSessionStatus("starting", "ready");
-    status = transitionComputeSessionStatus(status, "restarting");
-    status = transitionComputeSessionStatus(status, "ready");
-    status = transitionComputeSessionStatus(status, "stopping");
-    status = transitionComputeSessionStatus(status, "stopped");
+  it.effect("reports why the caller is holding it wrong", () =>
+    Effect.gen(function* () {
+      const error = yield* refusal("stopped", "ready");
 
-    expect(status).toBe("stopped");
-  });
-
-  it("leaves every terminal status without a successor", () => {
-    for (const terminal of TERMINAL_COMPUTE_SESSION_STATUSES) {
-      for (const next of STATUSES) {
-        if (next === terminal) continue;
-        expect(() => transitionComputeSessionStatus(terminal, next)).toThrow(
-          InvalidComputeSessionTransitionError,
-        );
-      }
-    }
-  });
-
-  it("reports why the caller is holding it wrong", () => {
-    const error = new InvalidComputeSessionTransitionError("stopped", "ready");
-
-    expect(error.message).toBe(
-      "Compute session status cannot transition from 'stopped' to 'ready'.",
-    );
-    expect([error.current, error.next]).toEqual(["stopped", "ready"]);
-  });
+      expect(error.message).toBe(
+        "Compute session status cannot transition from 'stopped' to 'ready'.",
+      );
+      expect([error.current, error.next]).toEqual(["stopped", "ready"]);
+    }),
+  );
 });
 
 describe("compute session generations", () => {

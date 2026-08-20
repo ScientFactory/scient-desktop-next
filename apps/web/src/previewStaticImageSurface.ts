@@ -39,6 +39,18 @@ export function previewStaticImageRevisionKey(image: PreviewStaticImageSurfaceDe
         resource.artifactId,
         resource.representationId,
       ]);
+    // The content hash is the whole identity here: the same hash is the same
+    // bytes, so nothing about how the transcript around it is read, trimmed, or
+    // re-rendered can move this key. The session and execution ride along to
+    // keep the same figure produced in a different one from sharing a key.
+    case "compute-output":
+      return JSON.stringify([
+        resource._tag,
+        resource.projectId,
+        resource.sessionId,
+        resource.executionId,
+        resource.contentHash,
+      ]);
     case "environment-file":
       return JSON.stringify([resource._tag, resource.path, resource.access]);
   }

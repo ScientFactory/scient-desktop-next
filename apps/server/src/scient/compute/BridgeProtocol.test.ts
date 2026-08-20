@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- fixture loader reads JSON from disk.
-import * as FS from "node:fs";
-import * as Path from "node:path";
-import { fileURLToPath } from "node:url";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+import * as NodeURL from "node:url";
 
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -32,11 +32,10 @@ import {
   RestartedPayload,
   StreamPayload,
   WarningPayload,
-  type BridgeDirection,
   type BridgeMessage,
 } from "./BridgeProtocol.ts";
 
-const here = Path.dirname(fileURLToPath(import.meta.url));
+const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 
 const sessionId = ComputeSessionId.make("session-test");
 const generation = ComputeSessionGeneration.make(1);
@@ -60,11 +59,23 @@ const envelope = (
 });
 
 const loadFixture = (name: string): string =>
-  FS.readFileSync(Path.join(here, "fixtures", "bridge", name), "utf-8");
+  NodeFS.readFileSync(NodePath.join(here, "fixtures", "bridge", name), "utf-8");
+
+// Compiled once: `decodeUnknownSync` rebuilds the decoder on every call.
+const decodeHello = Schema.decodeUnknownSync(HelloPayload);
+const decodeHelloAck = Schema.decodeUnknownSync(HelloAckPayload);
+const decodeExecute = Schema.decodeUnknownSync(ExecutePayload);
+const decodeStream = Schema.decodeUnknownSync(StreamPayload);
+const decodeDisplay = Schema.decodeUnknownSync(DisplayPayload);
+const decodeError = Schema.decodeUnknownSync(ErrorPayload);
+const decodeWarning = Schema.decodeUnknownSync(WarningPayload);
+const decodeKernelReady = Schema.decodeUnknownSync(KernelReadyPayload);
+const decodeInterruptResult = Schema.decodeUnknownSync(InterruptResultPayload);
+const decodeRestarted = Schema.decodeUnknownSync(RestartedPayload);
 
 describe("bridge protocol payload schemas", () => {
   it("accepts a valid hello payload", () => {
-    const payload = Schema.decodeUnknownSync(HelloPayload)({
+    const payload = decodeHello({
       buildId: "build-1",
       frameLimit: 16 * 1024 * 1024,
       requiredCapabilities: ["execute", "interrupt", "restart", "shutdown"],
@@ -74,7 +85,7 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid hello-ack payload", () => {
-    const payload = Schema.decodeUnknownSync(HelloAckPayload)({
+    const payload = decodeHelloAck({
       ownerToken: "token-abc",
       pid: 12345,
       platform: "darwin",
@@ -85,7 +96,7 @@ describe("bridge protocol payload schemas", () => {
 
   it("rejects a hello-ack with non-positive pid", () => {
     expect(() =>
-      Schema.decodeUnknownSync(HelloAckPayload)({
+      decodeHelloAck({
         ownerToken: "token-abc",
         pid: 0,
         platform: "darwin",
@@ -95,7 +106,7 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid execute payload", () => {
-    const payload = Schema.decodeUnknownSync(ExecutePayload)({
+    const payload = decodeExecute({
       code: "print('hello')\n",
       silent: false,
       storeHistory: true,
@@ -105,7 +116,7 @@ describe("bridge protocol payload schemas", () => {
 
   it("rejects an execute payload with oversized code", () => {
     expect(() =>
-      Schema.decodeUnknownSync(ExecutePayload)({
+      decodeExecute({
         code: "x".repeat(1024 * 1024 + 1),
         silent: false,
         storeHistory: true,
@@ -113,8 +124,18 @@ describe("bridge protocol payload schemas", () => {
     ).toThrow();
   });
 
+  it("applies execute bounds to UTF-8 bytes, not only characters", () => {
+    expect(() =>
+      decodeExecute({
+        code: "é".repeat(600_000),
+        silent: false,
+        storeHistory: true,
+      }),
+    ).toThrow();
+  });
+
   it("accepts a valid stream payload", () => {
-    const payload = Schema.decodeUnknownSync(StreamPayload)({
+    const payload = decodeStream({
       stream: "stdout",
       text: "output line\n",
     });
@@ -123,7 +144,7 @@ describe("bridge protocol payload schemas", () => {
 
   it("rejects a stream payload with oversized text", () => {
     expect(() =>
-      Schema.decodeUnknownSync(StreamPayload)({
+      decodeStream({
         stream: "stdout",
         text: "x".repeat(256 * 1024 + 1),
       }),
@@ -131,7 +152,7 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid PNG display payload", () => {
-    const payload = Schema.decodeUnknownSync(DisplayPayload)({
+    const payload = decodeDisplay({
       mediaType: "image/png",
       data: "iVBORw0KGgo=",
     });
@@ -139,7 +160,7 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid text display payload", () => {
-    const payload = Schema.decodeUnknownSync(DisplayPayload)({
+    const payload = decodeDisplay({
       mediaType: "text/plain",
       text: "<Figure size 640x480>",
     });
@@ -148,7 +169,7 @@ describe("bridge protocol payload schemas", () => {
 
   it("rejects a display payload with unknown media type", () => {
     expect(() =>
-      Schema.decodeUnknownSync(DisplayPayload)({
+      decodeDisplay({
         mediaType: "text/html",
         text: "<b>bold</b>",
       }),
@@ -156,7 +177,7 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid error payload", () => {
-    const payload = Schema.decodeUnknownSync(ErrorPayload)({
+    const payload = decodeError({
       name: "ValueError",
       value: "bad value",
       traceback: ["line 1", "line 2"],
@@ -166,7 +187,7 @@ describe("bridge protocol payload schemas", () => {
 
   it("rejects an error payload with too many traceback lines", () => {
     expect(() =>
-      Schema.decodeUnknownSync(ErrorPayload)({
+      decodeError({
         name: "ValueError",
         value: "bad value",
         traceback: Array(201).fill("line"),
@@ -175,7 +196,7 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid warning payload", () => {
-    const payload = Schema.decodeUnknownSync(WarningPayload)({
+    const payload = decodeWarning({
       code: "output-truncated",
       detail: "Stream text exceeded 256 KiB.",
     });
@@ -184,7 +205,7 @@ describe("bridge protocol payload schemas", () => {
 
   it("rejects a warning payload with unknown code", () => {
     expect(() =>
-      Schema.decodeUnknownSync(WarningPayload)({
+      decodeWarning({
         code: "not-a-real-warning",
         detail: null,
       }),
@@ -192,7 +213,7 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid kernel-ready payload", () => {
-    const payload = Schema.decodeUnknownSync(KernelReadyPayload)({
+    const payload = decodeKernelReady({
       kernelPid: 99999,
       languageId: "python",
       languageVersion: "3.12.0",
@@ -203,18 +224,15 @@ describe("bridge protocol payload schemas", () => {
   });
 
   it("accepts a valid interrupt-result payload", () => {
-    const payload = Schema.decodeUnknownSync(InterruptResultPayload)({
+    const payload = decodeInterruptResult({
       result: "interrupted",
     });
     expect(payload.result).toBe("interrupted");
   });
 
   it("accepts a valid restarted payload", () => {
-    const payload = Schema.decodeUnknownSync(RestartedPayload)({
-      kernelPid: 88888,
-      generation: 2,
-    });
-    expect(payload.generation).toBe(2);
+    const payload = decodeRestarted({ kernelPid: 88888 });
+    expect(payload.kernelPid).toBe(88888);
   });
 });
 

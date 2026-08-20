@@ -20,17 +20,26 @@ import {
 // Bounds
 // ---------------------------------------------------------------------------
 
-const MaxCodeBytes = 1024 * 1024;
-const MaxStreamTextBytes = 256 * 1024;
-const MaxErrorNameBytes = 256;
-const MaxErrorValueBytes = 16 * 1024;
-const MaxTracebackLineBytes = 4 * 1024;
+const MaxCodeLength = 1024 * 1024;
+const MaxStreamTextLength = 256 * 1024;
+const MaxErrorNameLength = 256;
+const MaxErrorValueLength = 16 * 1024;
+const MaxTracebackLineLength = 4 * 1024;
 const MaxTracebackLines = 200;
+// Base64 is ASCII, so here the two readings are the same number. Eleven
+// mebibytes of base64 is an eight mebibyte figure, which leaves the 16 MiB
+// frame limit room for the envelope around it.
 const MaxPngBase64Bytes = 11 * 1024 * 1024;
 const MaxOwnerTokenLength = 128;
 const MaxPathLength = 4096;
 const MaxDetailLength = 4096;
 const MaxFatalReasonLength = 4096;
+const utf8 = new TextEncoder();
+
+const utf8Bound = (maximum: number) =>
+  Schema.makeFilter((value: string) =>
+    utf8.encode(value).byteLength <= maximum ? true : `Expected at most ${maximum} UTF-8 bytes.`,
+  );
 
 // ---------------------------------------------------------------------------
 // Message type union
@@ -144,6 +153,16 @@ export type HelloAckPayload = typeof HelloAckPayload.Type;
 
 export const StartKernelPayload = Schema.Struct({
   workingDirectory: Schema.NonEmptyString.check(Schema.isMaxLength(MaxPathLength)),
+  /**
+   * Which kernel to start.
+   *
+   * `null` starts an `ipykernel` inside the bridge's own interpreter, which is
+   * the Python case: the server already chose that interpreter when it spawned
+   * the bridge, so no kernelspec lookup can redirect it.  A name selects an
+   * installed Jupyter kernelspec instead, which is how a future non-Python
+   * language reuses this transport without the bridge knowing the language.
+   */
+  kernelName: Schema.NullOr(Label),
 });
 export type StartKernelPayload = typeof StartKernelPayload.Type;
 
@@ -157,7 +176,7 @@ export const KernelReadyPayload = Schema.Struct({
 export type KernelReadyPayload = typeof KernelReadyPayload.Type;
 
 export const ExecutePayload = Schema.Struct({
-  code: Schema.String.check(Schema.isMaxLength(MaxCodeBytes)),
+  code: Schema.String.check(Schema.isMaxLength(MaxCodeLength), utf8Bound(MaxCodeLength)),
   silent: Schema.Boolean,
   storeHistory: Schema.Boolean,
 });
@@ -168,7 +187,10 @@ export type AcceptedPayload = typeof AcceptedPayload.Type;
 
 export const StreamPayload = Schema.Struct({
   stream: ComputeOutputStream,
-  text: Schema.String.check(Schema.isMaxLength(MaxStreamTextBytes)),
+  text: Schema.String.check(
+    Schema.isMaxLength(MaxStreamTextLength),
+    utf8Bound(MaxStreamTextLength),
+  ),
 });
 export type StreamPayload = typeof StreamPayload.Type;
 
@@ -179,15 +201,18 @@ export const DisplayPayload = Schema.Union([
   }),
   Schema.Struct({
     mediaType: Schema.Literal("text/plain"),
-    text: Schema.String.check(Schema.isMaxLength(MaxStreamTextBytes)),
+    text: Schema.String.check(
+      Schema.isMaxLength(MaxStreamTextLength),
+      utf8Bound(MaxStreamTextLength),
+    ),
   }),
 ]);
 export type DisplayPayload = typeof DisplayPayload.Type;
 
 export const ErrorPayload = Schema.Struct({
-  name: Schema.String.check(Schema.isMaxLength(MaxErrorNameBytes)),
-  value: Schema.String.check(Schema.isMaxLength(MaxErrorValueBytes)),
-  traceback: Schema.Array(Schema.String.check(Schema.isMaxLength(MaxTracebackLineBytes))).check(
+  name: Schema.String.check(Schema.isMaxLength(MaxErrorNameLength)),
+  value: Schema.String.check(Schema.isMaxLength(MaxErrorValueLength)),
+  traceback: Schema.Array(Schema.String.check(Schema.isMaxLength(MaxTracebackLineLength))).check(
     Schema.isMaxLength(MaxTracebackLines),
   ),
 });
@@ -224,9 +249,16 @@ export const RestartPayload = Schema.Struct({
 });
 export type RestartPayload = typeof RestartPayload.Type;
 
+/**
+ * The new generation is not in here on purpose.
+ *
+ * Every message already carries a `generation` in its envelope, and that is the
+ * one the sequence and identity checks validate. A second copy in the payload
+ * could disagree with it, and there would be no principled way to say which one
+ * the session is actually at.
+ */
 export const RestartedPayload = Schema.Struct({
   kernelPid: Schema.Int.check(Schema.isGreaterThan(0)),
-  generation: ComputeSessionGeneration,
 });
 export type RestartedPayload = typeof RestartedPayload.Type;
 
@@ -242,29 +274,40 @@ export const FatalPayload = Schema.Struct({
 export type FatalPayload = typeof FatalPayload.Type;
 
 // ---------------------------------------------------------------------------
-// Payload schema registry
+// Payload decoder registry
 // ---------------------------------------------------------------------------
 
-const PAYLOAD_SCHEMAS: Readonly<Record<BridgeMessageType, Schema.Schema<any>>> = {
-  hello: HelloPayload,
-  "hello-ack": HelloAckPayload,
-  "start-kernel": StartKernelPayload,
-  "kernel-ready": KernelReadyPayload,
-  execute: ExecutePayload,
-  accepted: AcceptedPayload,
-  stream: StreamPayload,
-  display: DisplayPayload,
-  error: ErrorPayload,
-  warning: WarningPayload,
-  "execution-complete": ExecutionCompletePayload,
-  interrupt: InterruptPayload,
-  "interrupt-result": InterruptResultPayload,
-  restart: RestartPayload,
-  restarted: RestartedPayload,
-  shutdown: ShutdownPayload,
-  "shutdown-complete": ShutdownCompletePayload,
-  fatal: FatalPayload,
-} as const;
+/**
+ * Compiled once at module load, keyed by message type.
+ *
+ * Every stream chunk, display and diagnostic the kernel produces passes through
+ * this table, so compiling a decoder per message would put schema compilation
+ * on the output hot path.  The `Record<BridgeMessageType, ...>` type makes a
+ * new message type a compile error until it has a payload schema.
+ */
+const PAYLOAD_DECODERS: Readonly<Record<BridgeMessageType, (input: unknown) => unknown>> = {
+  hello: Schema.decodeUnknownSync(HelloPayload),
+  "hello-ack": Schema.decodeUnknownSync(HelloAckPayload),
+  "start-kernel": Schema.decodeUnknownSync(StartKernelPayload),
+  "kernel-ready": Schema.decodeUnknownSync(KernelReadyPayload),
+  execute: Schema.decodeUnknownSync(ExecutePayload),
+  accepted: Schema.decodeUnknownSync(AcceptedPayload),
+  stream: Schema.decodeUnknownSync(StreamPayload),
+  display: Schema.decodeUnknownSync(DisplayPayload),
+  error: Schema.decodeUnknownSync(ErrorPayload),
+  warning: Schema.decodeUnknownSync(WarningPayload),
+  "execution-complete": Schema.decodeUnknownSync(ExecutionCompletePayload),
+  interrupt: Schema.decodeUnknownSync(InterruptPayload),
+  "interrupt-result": Schema.decodeUnknownSync(InterruptResultPayload),
+  restart: Schema.decodeUnknownSync(RestartPayload),
+  restarted: Schema.decodeUnknownSync(RestartedPayload),
+  shutdown: Schema.decodeUnknownSync(ShutdownPayload),
+  "shutdown-complete": Schema.decodeUnknownSync(ShutdownCompletePayload),
+  fatal: Schema.decodeUnknownSync(FatalPayload),
+};
+
+/** Compiled once, for the same reason. */
+const isBridgeMessageType = Schema.is(BridgeMessageType);
 
 // ---------------------------------------------------------------------------
 // Decoded bridge message
@@ -307,14 +350,12 @@ export function decodeBridgeMessage(
   // then the function returns a pure Effect.succeed or Effect.fail.
 
   // 1. Type membership.
-  let type: BridgeMessageType;
-  try {
-    type = Schema.decodeUnknownSync(BridgeMessageType)(message.type);
-  } catch {
+  if (!isBridgeMessageType(message.type)) {
     return Effect.fail(
       bridgeProtocolError("malformed-payload", `Unknown bridge message type '${message.type}'.`),
     );
   }
+  const type: BridgeMessageType = message.type;
 
   // 2. Direction
   const direction = bridgeMessageDirection(type);
@@ -352,11 +393,7 @@ export function decodeBridgeMessage(
   // 4. Payload schema.
   let payload: unknown;
   try {
-    // The union of payload schemas from the record cannot be statically
-    // narrowed to ConstraintDecoder<unknown, never>; the cast is safe
-    // because every entry is a self-contained Schema.Struct with R = never.
-    const decode = Schema.decodeUnknownSync(PAYLOAD_SCHEMAS[type] as never);
-    payload = decode(message.payload);
+    payload = PAYLOAD_DECODERS[type](message.payload);
   } catch (cause) {
     return Effect.fail(
       bridgeProtocolError(

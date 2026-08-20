@@ -29,6 +29,17 @@ import {
   ServerCliPublishIconTargetMissingError,
 } from "./cliErrors.ts";
 
+/**
+ * The compute bridge, in the source tree and in a built server.
+ *
+ * `STAGED_BRIDGE_DIRECTORY` in `PythonComputeRuntime.ts` is the runtime half of
+ * this agreement: the server looks for the bridge here, so the build has to put
+ * it here. Spelled out rather than imported because a build script that pulled
+ * in a server module would pull in its dependencies with it.
+ */
+const SCIENT_COMPUTE_BRIDGE_SOURCE = "src/scient/compute/bridge/scient_compute_bridge.py";
+const SCIENT_COMPUTE_BRIDGE_ASSET = "dist/scient-compute-bridge/scient_compute_bridge.py";
+
 interface PackageJson {
   name: string;
   repository: {
@@ -172,6 +183,19 @@ const buildCmd = Command.make(
       } else {
         yield* Effect.logWarning("[cli] Web dist not found — skipping client bundle.");
       }
+
+      // The Python compute bridge is data, not code the bundler can see: the
+      // server hands its path to an interpreter. Only the bridge itself is
+      // staged -- its own tests live beside it in the source tree and have no
+      // business in a release.
+      const bridgeSource = path.join(serverDir, SCIENT_COMPUTE_BRIDGE_SOURCE);
+      const bridgeTarget = path.join(serverDir, SCIENT_COMPUTE_BRIDGE_ASSET);
+      if (!(yield* fs.exists(bridgeSource))) {
+        return yield* new ServerCliBuildAssetMissingError({ assetPath: bridgeSource });
+      }
+      yield* fs.makeDirectory(path.dirname(bridgeTarget), { recursive: true });
+      yield* fs.copyFile(bridgeSource, bridgeTarget);
+      yield* Effect.log(`[cli] Staged the compute bridge into ${SCIENT_COMPUTE_BRIDGE_ASSET}`);
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 
@@ -227,6 +251,7 @@ const publishCmd = Command.make(
         "dist/bin.mjs",
         "dist/service-launcher.mjs",
         "dist/client/index.html",
+        SCIENT_COMPUTE_BRIDGE_ASSET,
       ]) {
         const abs = path.join(serverDir, relPath);
         if (!(yield* fs.exists(abs))) {

@@ -3,6 +3,7 @@
   "owner": "ScientFactory",
   "ownedRoots": [
     "apps/server/src/scient/analysis",
+    "apps/server/src/scient/compute",
     "apps/server/src/scient/execution",
     "apps/server/src/scient/latex",
     "apps/web/src/scient/analysis",
@@ -61,14 +62,19 @@
       "purpose": "Pass the isolated development state root to the local backend."
     },
     {
-      "path": "apps/server/src/atomicWrite.ts",
-      "anchor": "fs.chmod",
-      "purpose": "Preserve executable mode through the inherited atomic-write primitive."
+      "path": "apps/server/scripts/cli.ts",
+      "anchor": "scient-compute-bridge",
+      "purpose": "Stage the Python compute bridge beside the packed server and gate publishing on it."
     },
     {
       "path": "apps/server/src/assets/AssetAccess.ts",
       "anchor": "analysis-artifact",
-      "purpose": "Resolve typed analysis artifacts through the shared asset service."
+      "purpose": "Resolve typed analysis artifacts and compute session outputs through the shared asset service."
+    },
+    {
+      "path": "apps/server/src/atomicWrite.ts",
+      "anchor": "fs.chmod",
+      "purpose": "Preserve executable mode through the inherited atomic-write primitive."
     },
     {
       "path": "apps/server/src/auth/RpcAuthorization.ts",
@@ -83,12 +89,12 @@
     {
       "path": "apps/server/src/config.ts",
       "anchor": "analysisDir",
-      "purpose": "Derive server-owned analysis storage from the configured state root."
+      "purpose": "Derive server-owned analysis and compute storage from the configured state root."
     },
     {
       "path": "apps/server/src/server.ts",
       "anchor": "AnalysisService",
-      "purpose": "Provide analysis and execution services to the shared server layer."
+      "purpose": "Provide analysis, compute, and execution services to the shared server layer."
     },
     {
       "path": "apps/server/src/workspace/WorkspaceFileSystem.ts",
@@ -98,7 +104,7 @@
     {
       "path": "apps/server/src/ws.ts",
       "anchor": "analysisStartRun",
-      "purpose": "Mount authenticated analysis and exact-file-watch RPC handlers."
+      "purpose": "Mount authenticated analysis and exact-file-watch RPC handlers, and resolve compute output assets."
     },
     {
       "path": "apps/web/src/components/ChatView.tsx",
@@ -163,7 +169,7 @@
     {
       "path": "packages/contracts/src/assets.ts",
       "anchor": "analysis-artifact",
-      "purpose": "Add a producer-neutral analysis artifact resource kind."
+      "purpose": "Add producer-neutral analysis artifact and compute output resource kinds."
     },
     {
       "path": "packages/contracts/src/index.ts",

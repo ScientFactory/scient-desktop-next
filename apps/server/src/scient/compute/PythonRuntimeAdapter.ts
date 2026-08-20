@@ -1,9 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- discovery checks .venv existence and resolves paths.
+import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import * as Crypto from "node:crypto";
-import * as FS from "node:fs";
-import * as Path from "node:path";
+import * as NodeCrypto from "node:crypto";
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
 
 import {
   ComputeEnvironmentFingerprint,
@@ -14,14 +17,12 @@ import {
   ComputeRuntimeSource,
   ComputeRuntimeVerification,
   ComputeTransportKind,
-  type ComputeDiagnostic,
-  type ComputeDiscoveryRequest,
   type ComputeLanguageAdapter,
   type ComputeLaunchPlan,
   type ComputeLaunchRequest,
-  type ComputeRuntimeErrorReport,
 } from "@scientfactory/compute";
 
+import { sanitizeComputeEnvironment, validateProjectRoot } from "./ComputeEnvironmentPolicy.ts";
 import { normalizePythonDiagnostic } from "./PythonDiagnostic.ts";
 
 // ---------------------------------------------------------------------------
@@ -35,6 +36,11 @@ export const JUPYTER_BRIDGE_TRANSPORT_KIND = ComputeTransportKind.make("jupyter-
 // Minimum version requirements (from Phase 2 plan §2.6)
 // ---------------------------------------------------------------------------
 
+/**
+ * 3.10 is the floor because the bridge builds an `asyncio.Event` before a loop
+ * is running, which 3.9 rejects outright. Verified against 3.9: the bridge's own
+ * unit tests fail to construct it at all.
+ */
 const MIN_PYTHON_VERSION = "3.10";
 const MIN_JUPYTER_CLIENT_VERSION = "8.6";
 const MIN_IPYKERNEL_VERSION = "6.29";
@@ -45,6 +51,8 @@ const MIN_IPYKERNEL_VERSION = "6.29";
 
 const ProbeResult = Schema.Struct({
   executable: Schema.String,
+  executableRealpath: Schema.String,
+  executableMtimeNs: Schema.String,
   implementation: Schema.String,
   version: Schema.String,
   architecture: Schema.NullOr(Schema.String),
@@ -61,20 +69,47 @@ const decodeProbe = Schema.decodeUnknownSync(ProbeResult);
 // Version comparison
 // ---------------------------------------------------------------------------
 
-function compareVersions(a: string, b: string): number {
-  const pa = a.split(".").map(Number);
-  const pb = b.split(".").map(Number);
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const va = pa[i] ?? 0;
-    const vb = pb[i] ?? 0;
+interface ComparablePythonVersion {
+  readonly release: ReadonlyArray<number>;
+  readonly prerelease: boolean;
+}
+
+/**
+ * The readiness gate needs only PEP 440's ordering around a final minimum.
+ * Parse that subset explicitly instead of letting `Number("rc1")` become NaN
+ * and accidentally treating malformed or pre-release versions as equal.
+ */
+function parseComparableVersion(value: string): ComparablePythonVersion | null {
+  const match =
+    /^(\d+(?:\.\d+)*)(?:(a|b|rc)\d+|(?:[._-]?dev)\d*)?(?:(?:[._-]?post)\d*)?(?:\+[a-z0-9]+(?:[._-][a-z0-9]+)*)?$/i.exec(
+      value.trim(),
+    );
+  if (match === null) return null;
+  return {
+    release: match[1]!.split(".").map((segment) => Number.parseInt(segment, 10)),
+    prerelease: match[2] !== undefined || /(?:^|[._-])dev\d*/i.test(value),
+  };
+}
+
+function compareVersions(a: ComparablePythonVersion, b: ComparablePythonVersion): number {
+  for (let i = 0; i < Math.max(a.release.length, b.release.length); i++) {
+    const va = a.release[i] ?? 0;
+    const vb = b.release[i] ?? 0;
     if (va > vb) return 1;
     if (va < vb) return -1;
   }
+  if (a.prerelease !== b.prerelease) return a.prerelease ? -1 : 1;
   return 0;
 }
 
 function meetsMinimum(actual: string, minimum: string): boolean {
-  return compareVersions(actual, minimum) >= 0;
+  const parsedActual = parseComparableVersion(actual);
+  const parsedMinimum = parseComparableVersion(minimum);
+  return (
+    parsedActual !== null &&
+    parsedMinimum !== null &&
+    compareVersions(parsedActual, parsedMinimum) >= 0
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -87,9 +122,11 @@ function meetsMinimum(actual: string, minimum: string): boolean {
  * site-packages altering the result.
  */
 export const PROBE_SCRIPT = [
-  "import json, sys, platform",
+  "import importlib.metadata as metadata, json, os, sys, platform",
   "r = {",
   '  "executable": sys.executable,',
+  '  "executableRealpath": os.path.realpath(sys.executable),',
+  '  "executableMtimeNs": str(os.stat(sys.executable).st_mtime_ns),',
   '  "implementation": platform.python_implementation(),',
   '  "version": platform.python_version(),',
   '  "architecture": platform.machine() or None,',
@@ -100,9 +137,8 @@ export const PROBE_SCRIPT = [
   "}",
   'for pkg in ["jupyter_client", "ipykernel", "matplotlib", "numpy", "pandas"]:',
   "    try:",
-  "        m = __import__(pkg)",
-  '        r["packages"][pkg] = getattr(m, "__version__", "unknown")',
-  "    except ImportError:",
+  '        r["packages"][pkg] = metadata.version(pkg)',
+  "    except metadata.PackageNotFoundError:",
   '        r["packages"][pkg] = None',
   "print(json.dumps(r))",
 ].join("\n");
@@ -187,39 +223,62 @@ export function buildProfile(
  *
  * `-I` prevents project-controlled PYTHONPATH, user site packages, and current
  * directory imports from changing bridge code resolution.
+ *
+ * The environment policy is applied here rather than by the caller. This is the
+ * only function that produces a plan, so enforcing it here means no caller can
+ * forget to -- and the raw environment a caller passes in is treated as an
+ * input to sanitize rather than a decision to honour.
  */
 export function buildLaunchPlan(
   request: ComputeLaunchRequest,
   bridgePath: string,
 ): ComputeLaunchPlan {
+  const cwd = validateProjectRoot(request.cwd);
+  const { environment } = sanitizeComputeEnvironment(request.environment);
   return {
     executable: request.profile.executable,
     args: ["-I", "-u", bridgePath],
-    cwd: request.cwd,
-    environment: request.environment,
+    cwd,
+    environment,
   };
 }
 
 /**
- * Computes a provenance fingerprint from a profile.
+ * Computes a provenance fingerprint from the selected profile and its probe.
  *
  * This is provenance, not a safe verification-cache key: package contents can
- * change without changing the interpreter executable.  Phase 2 does not cache
- * verification.
+ * change without changing the interpreter executable. The short probe cache is
+ * only startup deduplication and does not make this a verification-cache key.
  */
 export function computeFingerprint(
   profile: ComputeRuntimeProfile,
-  packageVersions: Readonly<Record<string, string | null>>,
+  probe: ProbeResult,
 ): ComputeEnvironmentFingerprint {
-  const contributors = ["executable", "languageVersion", ...Object.keys(packageVersions).sort()];
+  const contributors = [
+    "executable",
+    "executableMtimeNs",
+    "languageVersion",
+    "architecture",
+    "implementation",
+    "prefix",
+    "basePrefix",
+    "platform",
+    ...Object.keys(probe.packages).sort(),
+  ];
   const data = [
-    profile.executable,
+    probe.executableRealpath,
+    probe.executableMtimeNs,
     profile.languageVersion,
-    ...Object.entries(packageVersions)
+    profile.architecture ?? "",
+    probe.implementation,
+    probe.prefix,
+    probe.base_prefix,
+    probe.platform,
+    ...Object.entries(probe.packages)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`),
   ].join("|");
-  const hash = Crypto.createHash("sha256").update(data).digest("hex");
+  const hash = NodeCrypto.createHash("sha256").update(data).digest("hex");
   return {
     hash: `sha256:${hash}`,
     contributors,
@@ -244,9 +303,9 @@ export function discoverCandidates(
   }
 
   const venvPython = isWindows
-    ? Path.join(projectRoot, ".venv", "Scripts", "python.exe")
-    : Path.join(projectRoot, ".venv", "bin", "python");
-  if (FS.existsSync(venvPython)) {
+    ? NodePath.join(projectRoot, ".venv", "Scripts", "python.exe")
+    : NodePath.join(projectRoot, ".venv", "bin", "python");
+  if (NodeFS.existsSync(venvPython)) {
     candidates.push({ executable: venvPython, source: "project" });
   }
 
@@ -258,12 +317,13 @@ export function discoverCandidates(
     candidates.push({ executable: "python", source: "path" });
   }
 
-  // Deduplicate by canonical executable, preserving precedence order.
+  // Deduplicate by executable, preserving precedence order.  A configured
+  // executable that also happens to be the project venv is probed once, under
+  // the stronger source.
   const seen = new Set<string>();
-  return candidates.filter((c) => {
-    const key = Path.isAbsolute(c.executable) ? c.executable : c.executable;
-    if (seen.has(key)) return false;
-    seen.add(key);
+  return candidates.filter((candidate) => {
+    if (seen.has(candidate.executable)) return false;
+    seen.add(candidate.executable);
     return true;
   });
 }
@@ -296,31 +356,70 @@ export function makePythonRuntimeAdapter(
   spawnProbe: (executable: string) => Effect.Effect<string, ComputeRuntimeError>,
   bridgePath: string,
 ): ComputeLanguageAdapter {
+  const probeCache = new Map<
+    string,
+    { readonly probe: ProbeResult; readonly observedAt: number }
+  >();
+  const probeCacheTtlMs = 30_000;
+
+  const cachedProbe = (executable: string, now: number): ProbeResult | null => {
+    const cached = probeCache.get(executable);
+    if (cached === undefined) return null;
+    if (now - cached.observedAt > probeCacheTtlMs) {
+      probeCache.delete(executable);
+      return null;
+    }
+    return cached.probe;
+  };
+
+  const rememberProbe = (
+    requestedExecutable: string,
+    probe: ProbeResult,
+    observedAt: number,
+  ): ProbeResult => {
+    const entry = { probe, observedAt };
+    probeCache.set(requestedExecutable, entry);
+    probeCache.set(probe.executable, entry);
+    return probe;
+  };
+
+  const readProbe = (executable: string) =>
+    Effect.gen(function* () {
+      const now = yield* Clock.currentTimeMillis;
+      const cached = cachedProbe(executable, now);
+      if (cached !== null) return cached;
+      const stdout = yield* spawnProbe(executable);
+      return yield* Effect.try({
+        try: () => rememberProbe(executable, parseProbeOutput(stdout), now),
+        catch: (cause) =>
+          runtimeError("verify", `Probe output from ${executable} was malformed.`, cause),
+      });
+    });
+
   const discover: ComputeLanguageAdapter["discover"] = (request) =>
     Effect.gen(function* () {
+      const platform = yield* HostProcessPlatform;
       const candidates = discoverCandidates(
         request.projectRoot,
         request.configuredExecutable,
-        process.platform,
+        platform,
       );
 
       const profiles: ComputeRuntimeProfile[] = [];
       for (const candidate of candidates) {
-        const result = yield* Effect.matchEffect(spawnProbe(candidate.executable), {
-          onFailure: () => Effect.succeed({ success: false as const, stdout: "" }),
-          onSuccess: (stdout) => Effect.succeed({ success: true as const, stdout }),
+        const result = yield* Effect.matchEffect(readProbe(candidate.executable), {
+          onFailure: () => Effect.succeed({ success: false as const, probe: null }),
+          onSuccess: (probe) => Effect.succeed({ success: true as const, probe }),
         });
-        if (result.success) {
-          try {
-            const probe = parseProbeOutput(result.stdout);
-            profiles.push(buildProfile(probe, candidate.source));
-          } catch {
-            // Skip candidates whose probe output is malformed.
-          }
-        }
-        // If an explicit configured executable fails, return its invalid
-        // profile rather than silently replacing it.
-        if (candidate.source === "configured" && !result.success && profiles.length === 0) {
+        // Malformed probe output is as unusable as a probe that would not run
+        // at all: a runtime that cannot describe itself is not one to offer.
+        const profile = result.success
+          ? Option.some(buildProfile(result.probe, candidate.source))
+          : Option.none();
+        if (Option.isSome(profile)) profiles.push(profile.value);
+        // An interpreter the user named is answered with its own result rather
+        // than quietly replaced by whatever else happens to be installed.
+        if (candidate.source === "configured" && Option.isNone(profile)) {
           return [
             {
               languageId: PYTHON_LANGUAGE_ID,
@@ -339,34 +438,33 @@ export function makePythonRuntimeAdapter(
 
   const verify: ComputeLanguageAdapter["verify"] = (launchRequest) =>
     Effect.gen(function* () {
-      const stdout = yield* spawnProbe(launchRequest.profile.executable).pipe(
-        Effect.mapError((cause) =>
-          runtimeError("verify", `Failed to probe ${launchRequest.profile.executable}.`, cause),
+      const parsed = yield* Effect.result(
+        readProbe(launchRequest.profile.executable).pipe(
+          Effect.mapError((cause) => runtimeError("verify", cause.message, cause)),
         ),
       );
-
-      let probe: ProbeResult;
-      try {
-        probe = parseProbeOutput(stdout);
-      } catch (cause) {
+      if (parsed._tag === "Failure") {
         return {
           profile: launchRequest.profile,
           readiness: "unusable" as const,
           missingRequirements: [],
-          message: `Probe output was malformed: ${(cause as Error).message}`,
-        };
+          message: `Probe failed: ${parsed.failure.message}`,
+        } satisfies ComputeRuntimeVerification;
       }
+      const probe = parsed.success;
 
       const { readiness, missing } = checkReadiness(probe);
 
-      // Verify that prepareLaunch produces the same executable as the probe.
-      const plan = buildLaunchPlan(launchRequest, bridgePath);
-      if (plan.executable !== probe.executable) {
+      // The profile records the interpreter's own `sys.executable`, so a launch
+      // built from it must name that same interpreter.  A mismatch means the
+      // profile was not produced by `discover` against this interpreter and the
+      // readiness answer above would describe a different runtime.
+      if (launchRequest.profile.executable !== probe.executable) {
         return {
           profile: launchRequest.profile,
           readiness: "unusable" as const,
           missingRequirements: [],
-          message: `Probe executable ${probe.executable} differs from launch executable ${plan.executable}.`,
+          message: `Probe executable ${probe.executable} differs from launch executable ${launchRequest.profile.executable}.`,
         };
       }
 
@@ -379,20 +477,20 @@ export function makePythonRuntimeAdapter(
     });
 
   const prepareLaunch: ComputeLanguageAdapter["prepareLaunch"] = (request) =>
-    Effect.succeed(buildLaunchPlan(request, bridgePath));
+    Effect.try({
+      try: () => buildLaunchPlan(request, bridgePath),
+      catch: (cause) => runtimeError("prepare", "The launch request was not usable.", cause),
+    });
 
   const normalizeDiagnostic: ComputeLanguageAdapter["normalizeDiagnostic"] = (report) =>
     normalizePythonDiagnostic(report);
 
   const fingerprintEnvironment: ComputeLanguageAdapter["fingerprintEnvironment"] = (profile) =>
     Effect.gen(function* () {
-      const stdout = yield* spawnProbe(profile.executable).pipe(
-        Effect.mapError((cause) =>
-          runtimeError("fingerprint", `Failed to probe ${profile.executable}.`, cause),
-        ),
+      const probe = yield* readProbe(profile.executable).pipe(
+        Effect.mapError((cause) => runtimeError("fingerprint", cause.message, cause)),
       );
-      const probe = parseProbeOutput(stdout);
-      return computeFingerprint(profile, probe.packages);
+      return computeFingerprint(profile, probe);
     });
 
   return {

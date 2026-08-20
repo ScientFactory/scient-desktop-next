@@ -17,8 +17,8 @@ const MAX_ERROR_VALUE_BYTES = 16384;
 // and OSC sequences.  Python tracebacks sometimes embed colour codes from
 // IPython or rich; stripping them keeps the diagnostic readable and prevents
 // control characters from reaching durable storage or the UI.
-// eslint-disable-next-line no-control-regex -- ANSI escape codes are the input we are cleaning.
 const ANSI_PATTERN =
+  // eslint-disable-next-line no-control-regex -- ANSI escape codes are the input we are cleaning.
   /(?:\u001B\[[0-9;]*[a-zA-Z])|(?:\u001B\][^\u0007]*(?:\u0007|\u001B\\))|(?:[\u0000-\u0008\u000B\u000C\u000E-\u001F])/g;
 
 function stripAnsi(text: string): string {
@@ -63,8 +63,14 @@ function truncateOnByteBoundary(text: string, maxBytes: number): string {
  *
  * Strips ANSI/control sequences, bounds every field, preserves the
  * human-readable traceback, and extracts no filesystem authority from
- * traceback strings.  Phase 2 does not attempt source mapping or path
- * authorization; Phase 3 can enrich frames against an authorized project.
+ * traceback strings.
+ *
+ * There are deliberately no structured frames. Turning `File "/x/y.py", line 3`
+ * into something a client could click needs a project root to resolve it
+ * against, and this function is handed a string from a runtime it does not
+ * trust and has no project authority of its own -- inventing one here would put
+ * path resolution in the one place that cannot check it. The verbatim traceback
+ * is enough for a renderer to linkify against the workspace it already knows.
  */
 export function normalizePythonDiagnostic(
   report: ComputeRuntimeErrorReport,
@@ -72,11 +78,14 @@ export function normalizePythonDiagnostic(
   const errorName = truncateOnByteBoundary(stripAnsi(report.name), MAX_ERROR_NAME_BYTES);
   const message = truncateOnByteBoundary(stripAnsi(report.value), MAX_ERROR_VALUE_BYTES);
 
+  // Emptied lines are dropped before the limit is applied, not after: a colour
+  // reset on its own line is nothing a reader needs, and counting it would let
+  // a traceback spend its whole allowance on lines that say nothing.
   const traceback = report.traceback
     .map(stripAnsi)
     .map((line) => truncateOnByteBoundary(line, MAX_TRACEBACK_LINE_BYTES))
-    .slice(0, MAX_TRACEBACK_LINES)
-    .filter((line) => line.length > 0);
+    .filter((line) => line.length > 0)
+    .slice(0, MAX_TRACEBACK_LINES);
 
   return [{ errorName, message, traceback }];
 }

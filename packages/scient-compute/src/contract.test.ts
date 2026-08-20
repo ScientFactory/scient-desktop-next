@@ -37,9 +37,14 @@ describe("compute contract", () => {
       event: "runtime-warning",
       detail: "Inconsistent kernel metadata.",
     });
-    if (output._tag === "system") {
-      expect(output.event).toBe("runtime-warning");
-    }
+
+    // Asserted rather than narrowed to: a decode that produced another member
+    // would satisfy a guard by skipping it.
+    expect(output).toMatchObject({
+      _tag: "system",
+      event: "runtime-warning",
+      detail: "Inconsistent kernel metadata.",
+    });
   });
 
   it("rejects an unknown system event", () => {
@@ -59,6 +64,7 @@ describe("compute contract", () => {
     const event = decodeTransportEvent({
       _tag: "output",
       requestId: "request-1",
+      generation: 1,
       output: {
         _tag: "image",
         sequence: 0,
@@ -71,15 +77,18 @@ describe("compute contract", () => {
       },
       image: { bytes: pngSignature },
     });
-    if (event._tag === "output" && event.image !== null) {
-      expect(event.image.bytes).toEqual(pngSignature);
-    }
+    expect(event).toMatchObject({
+      _tag: "output",
+      image: { bytes: pngSignature },
+      output: { _tag: "image", contentHash: "sha256:abc123" },
+    });
   });
 
   it("accepts null image bytes for non-image outputs", () => {
     const event = decodeTransportEvent({
       _tag: "output",
       requestId: null,
+      generation: 1,
       output: {
         _tag: "stream",
         sequence: 0,
@@ -89,8 +98,34 @@ describe("compute contract", () => {
       },
       image: null,
     });
-    if (event._tag === "output") {
-      expect(event.image).toBeNull();
-    }
+    expect(event).toMatchObject({ _tag: "output", image: null });
+  });
+
+  it("gives a runtime error the same ordering key as an output", () => {
+    const event = decodeTransportEvent({
+      _tag: "runtime-error",
+      sequence: 7,
+      observedAt: "2026-08-19T00:00:00.000Z",
+      requestId: "request-1",
+      generation: 1,
+      report: { name: "ValueError", value: "bad input", traceback: ["Traceback ..."] },
+    });
+
+    expect(event).toMatchObject({
+      _tag: "runtime-error",
+      sequence: 7,
+      observedAt: "2026-08-19T00:00:00.000Z",
+    });
+  });
+
+  it("refuses a runtime error that says nothing about when it happened", () => {
+    expect(() =>
+      decodeTransportEvent({
+        _tag: "runtime-error",
+        requestId: null,
+        generation: 1,
+        report: { name: "ValueError", value: "bad input", traceback: [] },
+      }),
+    ).toThrow();
   });
 });

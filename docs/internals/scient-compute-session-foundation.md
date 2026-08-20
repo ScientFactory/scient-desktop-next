@@ -1,30 +1,46 @@
 # Stateful Scientific Compute Foundation
 
-Status: Proposed (not yet accepted)
+Status: Accepted architecture
 Owner: Yaacov
 Created: 2026-08-18
 Purpose: Defines the architecture, domain model, transport boundary, persistence semantics, and phased implementation plan for stateful interactive scientific compute sessions in Scient. Written as a companion to the accepted `scient-analysis-runtime-foundation.md`, which governs one-shot terminal execution.
-Doc type: Architecture decision record (proposed)
+Doc type: Architecture decision record
+Implementation maturity: Phases 1-3 candidate; qualification in progress
+Product maturity: Phase 4 manual scientific workflow pending
+Release maturity: Not approved
 
 ## Planning Posture
 
-This is the first implementation plan for this subsystem, not a blind
-implementation mandate. It is a starting hypothesis intended to make the
-design reviewable. Improvement ideas, alternative designs, and architectural
-changes are explicitly welcome when they are justified from first principles,
-validated against the product goals, and shown to improve usefulness,
-reliability, scalability, or maintainability. Implementation should follow
-the best reviewed design, not this document mechanically.
+The architectural decisions in this record are accepted. The phase roadmap is
+an implementation hypothesis that remains reviewable: evidence may change its
+ordering, gates, or concrete mechanisms without silently changing the product
+principles and domain boundaries above them. Material architectural changes
+must amend this record rather than drift through implementation.
 
 ## Document Rules
 
-This document proposes a new stateful compute subsystem. It does **not**
+This document records the accepted architecture for a new stateful compute subsystem. It does **not**
 replace the analysis runtime foundation, select a Python distribution, define a
-final persisted schema, authorize a T3 divergence, or claim that anything
-described here is implemented.
+final persisted schema or authorize a T3 divergence. Sections 1-22 state the
+decision; the phase and verification sections distinguish implemented local
+work from product/release acceptance.
 
-Its status is **Proposed (not yet accepted)**. Nothing here is product truth
-until a human review accepts it.
+**Accepted** means that the product principles, domain boundaries, and dependency
+direction below are the basis for implementation. It does not mean that an
+implementation phase, operating system, packaged application, user experience,
+or release has passed its own acceptance gate. Later evidence may amend an ADR;
+"accepted" is not a claim that the design can never change.
+
+### Qualification status (2026-08-20)
+
+Phases 1-3 exist as a local implementation candidate and are under
+qualification. Focused package, server, Python-unit, real-kernel, typecheck,
+format, lint, seam, and production-build checks pass on the current macOS
+worktree. That evidence is not yet bound to a committed candidate, and the
+branch has no hosted cross-platform result. Phase 4 still owns authorization,
+compute RPC methods, client recovery/folding, editor integration, controls, and
+visual acceptance. Platform and packaged-app evidence belongs in the
+qualification ledger and must not displace the product decision in this ADR.
 
 It coordinates with, but does not duplicate:
 
@@ -41,9 +57,10 @@ It coordinates with, but does not duplicate:
 ### Update Policy
 
 Update this document when the architecture, transport decision, persistence
-model, or phase boundaries materially change. Move accepted architecture into
-`docs/architecture/` and shipped behavior into user-facing docs rather than
-treating this proposal as either.
+model, or phase boundaries materially change. When the first product slice is
+accepted, distill the stable architectural core into `docs/architecture/` and
+shipped behavior into user-facing docs rather than treating this living
+decision-and-roadmap record as either.
 
 ---
 
@@ -66,17 +83,131 @@ The first goal is one dependable scientific loop:
 Everything else — rich MIME, variables, agents, additional languages, managed
 environments — builds on that loop incrementally.
 
+### 1.1 Project-centered scientific work
+
+The ordinary project filesystem is the durable scientific workspace. Source
+stays in normal project files and editors; computation does not create a second
+notebook database or a hidden source tree. Running a selection, cell, file, or
+console submission produces an execution associated with the project, source,
+and session that caused it.
+
+The first product surface keeps review connected to that source:
+
+- text, errors, figures, and later tables appear in one project compute history;
+- a figure opens through the ordinary typed viewer rather than a Python-only
+  viewer;
+- files created or changed by user code remain ordinary project files and use
+  the workspace's existing read, write, conflict, refresh, and viewer lifecycle;
+- compute-owned retained output stays operational history until a deliberate
+  publication makes it a durable project result.
+
+### 1.2 Stateful exploration and isolated reproducibility
+
+Scient deliberately offers two execution actions:
+
+- **Run in session** is incremental and stateful. It may depend on variables
+  created by earlier executions in the same generation.
+- **Run isolated** uses the existing `AnalysisRun` domain and starts from a clean
+  process for stronger reproducibility.
+
+Neither action replaces the other. The UI must state which one will run, and a
+receipt must not present one stateful submission as independently reproducible
+when it depended on prior in-memory work.
+
+### 1.3 Polyglot and optional-runtime principle
+
+Scient has one language-neutral compute experience while runtime acquisition,
+dependencies, and licensing remain language-specific:
+
+- The base application starts and remains useful with no scientific runtime
+  installed.
+- `@scientfactory/compute`, session persistence, provenance, output review, and
+  project-result publication do not depend on Python, Jupyter, R, Julia,
+  MATLAB, or a particular vendor.
+- A language adapter discovers and verifies only its own runtimes. Absence or
+  failure disables that capability, not Scient or another language.
+- Discovery and verification never install packages, register kernels, accept
+  licenses, or mutate an environment.
+- A future Scient-managed runtime is an explicit, per-language, removable
+  acquisition. It is never a universal download imposed on users who do not
+  need it.
+- Proprietary runtimes and licenses remain owned by their vendor and the user.
+  Scient may discover and use an existing authorized installation; it does not
+  bundle, activate, or silently consume a license.
+- Jupyter is one reusable transport for compatible kernels, not the product
+  architecture and not a requirement for every language. A transport host and
+  the scientific runtime it supervises may be different installations; any
+  app-owned bridge host is a separately gated, on-demand component.
+- Capabilities are negotiated. A runtime may support execution, interrupt,
+  restart, figures, variables, tables, or inspection independently, and clients
+  show only actions the selected runtime truthfully supports.
+
+Python is the first complete proof of this model, not a dependency inherited by
+every future adapter.
+
+#### 1.3.1 Scientific Computing settings
+
+The existing application settings surface gains one adapter-driven
+**Scientific Computing** page. It is the user control surface for optional
+compute capabilities, not a Python-specific installer:
+
+- The page lists the language adapters this build actually supports and lets a
+  user enable or disable their exposure and automatic discovery independently.
+- Each enabled adapter reports detected and explicitly configured runtimes,
+  exact version/path identity, readiness, missing requirements, and truthful
+  capabilities. Capabilities are reported by the adapter; they are not
+  arbitrary feature toggles that can promise unsupported behavior.
+- User settings may choose a default runtime for new work. A project or session
+  still selects and records its exact runtime identity; changing a user default
+  does not rewrite existing project history.
+- Enabling a language does not install packages, download a runtime, accept a
+  license, or mutate an environment. Any supported acquisition, repair, update,
+  or removal action is explicit, language-scoped, and separately gated.
+- Disabling a language stops offering it for new sessions without deleting its
+  runtime or making prior executions and results unreadable.
+
+Additional language adapters register into this same page. They do not create
+parallel settings systems or require the page to gain language-specific domain
+logic.
+
+### 1.4 Source and execution authority
+
+Saved project files are authoritative for durable project source. The exact
+submitted bytes and their content hash in `ComputeExecution` are authoritative
+for what actually ran.
+
+A document execution therefore records whether the submission matched the
+saved file or came from a dirty buffer, plus its base saved revision and source
+range when available. A human may intentionally execute unsaved code; an agent
+normally begins from saved project files. Both use the same execution model,
+but Scient never claims that dirty submitted bytes came from the current saved
+revision.
+
+### 1.5 Human and agent use one scientific system
+
+Agent access is a later capability, not a parallel compute product. A provider
+thread remains the conversation; `ComputeSession` remains the project scientific
+resource. Manual and agent-triggered executions use the same service, lifecycle,
+history, outputs, viewers, project files, and publication model.
+
+Attribution and authorization differ. Agent sessions are bound to a host-derived
+operation envelope and remain separate from human or other-provider sessions
+unless an explicit sharing grant exists. The ordinary project compute surface
+shows who initiated an execution and lets an authorized user inspect, interrupt,
+restart, or stop it. No separate agent-only result store or review dashboard is
+introduced.
+
 ---
 
 ## 2. Preserve Existing Execution Concepts
 
-Scient already has two distinct execution systems. This proposal adds a third.
+Scient already has two distinct execution systems. This decision adds a third.
 
-| System                      | Purpose                                  | Lifecycle                                                |
-| --------------------------- | ---------------------------------------- | -------------------------------------------------------- |
-| `AnalysisRun`               | Isolated, terminal file/task execution   | One process, one exit code, one terminal result          |
-| `DocumentBuild`             | Revision-bound LaTeX/document production | Build → publish → binding lifecycle                      |
-| `ComputeSession` (proposed) | Long-lived interactive namespace         | Many executions, persistent variables, interrupt/restart |
+| System           | Purpose                                  | Lifecycle                                                |
+| ---------------- | ---------------------------------------- | -------------------------------------------------------- |
+| `AnalysisRun`    | Isolated, terminal file/task execution   | One process, one exit code, one terminal result          |
+| `DocumentBuild`  | Revision-bound LaTeX/document production | Build → publish → binding lifecycle                      |
+| `ComputeSession` | Long-lived interactive namespace         | Many executions, persistent variables, interrupt/restart |
 
 ### Why they remain separate
 
@@ -104,6 +235,8 @@ is a sibling specialization, not a mode inside `AnalysisRun`.
 
 ### Build now
 
+- An adapter-driven Scientific Computing settings page, initially exposing
+  Python enablement, runtime discovery/configuration, readiness, and defaults.
 - Explicit Python executable selection and verification.
 - One default stateful session per project.
 - Run selection, cell, file, or console code.
@@ -136,8 +269,10 @@ is a sibling specialization, not a mode inside `AnalysisRun`.
 - R, Julia, or MATLAB sessions.
 - Cross-domain artifact refactoring.
 
-The underlying identifiers and contracts support these additions without
-requiring a redesign.
+The underlying identifiers, session lifecycle, persistence, and output model
+support these additions without a domain redesign. A real second-language
+adapter may still justify a typed transport-specific launch extension; the fake
+language-boundary test does not pre-approve that detail.
 
 ---
 
@@ -202,8 +337,9 @@ idle | busy | unresponsive
 Activity is separate from lifecycle because:
 
 - A ready session can be idle or busy.
-- A delayed heartbeat makes it unresponsive without immediately declaring it
-  lost.
+- A failed liveness check makes it lost. `unresponsive` is used when an
+  interrupt was delivered but the execution did not settle inside its bounded
+  window; it clears when the runtime next settles or is replaced.
 - A failed execution does not mean the session failed.
 
 ### 4.5 Compute execution
@@ -214,7 +350,7 @@ A `ComputeExecution` records:
 - `sessionId` and session generation
 - Exact submitted code and SHA-256 content hash
 - Source origin (file, selection, cell, console)
-- File revision and source range where available
+- Saved/dirty buffer state, base file revision, and source range where available
 - Queue position
 - Start and finish times
 - Terminal state
@@ -497,6 +633,12 @@ and notarization, updates, vulnerability response, license notices, and
 packaged-app size. The bridge boundary permits this later, but the first
 implementation should generate evidence before committing to that subsystem.
 
+If evidence requires one, it is acquired as an explicit Jupyter-transport
+component rather than folded into the base Scient installation. Languages that
+do not use that transport do not acquire it, and a bridge host does not become
+the authority for which language runtime or licensed installation the user
+selected.
+
 ---
 
 ## 8. Python Environment Model
@@ -575,6 +717,24 @@ Add `ComputeEnvironmentPolicy` that:
 This is defense in depth, not a sandbox. Python code still has the
 operating-system permissions of the Scient server process.
 
+### 8.6 Runtime delivery and licensing
+
+The initial Python slice is bring-your-own-runtime: it uses an explicitly
+selected or boundedly discovered environment and reports missing requirements
+without changing it. Later delivery choices remain separate product decisions:
+
+- An app-managed Python, R, Julia, or bridge environment is optional,
+  independently versioned, downloaded only after explicit consent, and
+  removable without affecting projects or other runtimes.
+- A project may declare or recommend an environment, but opening the project
+  never installs it or accepts terms on the user's behalf.
+- A proprietary adapter records availability and actionable license/setup
+  failure without copying vendor binaries, storing license secrets, or treating
+  an unavailable license as an application failure.
+- Transport support and kernel support are resolved separately. A user of an R
+  or Julia kernel must not be forced to select Python as the scientific runtime
+  merely because a Jupyter bridge happens to be implemented in Python.
+
 ---
 
 ## 9. Transport and Language Adapter Ports
@@ -624,6 +784,15 @@ This keeps session identity, generation, transport selection, and required
 capabilities under session policy; the adapter owns only language-specific
 launch preparation.
 
+`ComputeLaunchPlan.executable` names the process the transport supervises. In
+the initial Python adapter, the selected Python executable is both the bridge
+host and the kernel interpreter. That is an implementation economy, not a
+cross-language invariant. A later Jupyter adapter for R or Julia must identify
+the exact selected kernel independently from any Python bridge host; it must not
+pretend that an R executable itself speaks the Scient bridge protocol. The
+first real second-language adapter is the gate for adding a typed
+transport-specific launch configuration if the current plan is insufficient.
+
 ### 9.3 What belongs in an adapter
 
 - Runtime discovery.
@@ -653,9 +822,11 @@ The pure compute package includes:
 - A fake non-Jupyter transport (simulator).
 - A fake second-language adapter.
 
-This proves the coordinator contracts are not Python-specific. A real R
-installation is not required to deliver Python. Real R becomes a later
-integration proof.
+Together they prove that the coordinator lifecycle and adapter contract are not
+Python-specific. They do **not** prove that the current Python-hosted Jupyter
+launch plan can start R or Julia. A real second-language adapter and kernel are
+the integration proof for bridge-host/kernel separation; the fake test must not
+claim it.
 
 ### 9.6 Jupyter does not eliminate language adapters
 
@@ -667,7 +838,9 @@ normalization, variable inspection, or language-specific bootstrap behavior.
 The correct exit gate for adding R is:
 
 > R reuses the coordinator, persistence, output pipeline, and Jupyter
-> transport, implementing only an R language adapter.
+> transport; its adapter discovers and verifies an exact R runtime and the
+> transport launches that kernel without making Python the selected scientific
+> environment.
 
 Not:
 
@@ -852,11 +1025,11 @@ restart. It does not silently destroy the namespace.
 ### 12.5 Restart
 
 1. Reject new submissions temporarily.
-2. Increment the generation.
-3. Cancel queued work.
-4. Mark active work `cancelled` or `lost` according to observed transport
-   state.
-5. Restart the kernel.
+2. Cancel queued work.
+3. Restart the kernel.
+4. Mark active work `cancelled` only after controlled replacement is proven;
+   otherwise lose it with the session.
+5. Increment the generation only after the replacement is ready.
 6. Emit a visible namespace-cleared marker.
 7. Return the session to `ready`/`idle`.
 
@@ -865,7 +1038,8 @@ restart. It does not silently destroy the namespace.
 1. Reject new work.
 2. Cancel queued executions.
 3. Request graceful kernel shutdown.
-4. Wait for a bounded deadline (5 seconds).
+4. Wait up to 5 seconds per bridge shutdown stage, under a 15-second transport
+   round-trip deadline.
 5. Cancel the entire bridge/kernel process tree.
 6. Persist the final lifecycle state.
 
@@ -1041,6 +1215,10 @@ Provide:
 - Structured traceback rendering.
 - Matplotlib image output.
 - Visible restart, interruption, loss, and truncation markers.
+- One project compute history for manual work and later agent-attributed work;
+  no provider-only transcript or result surface.
+- Source association that returns from an execution to the ordinary file editor.
+- Figures opened through the existing typed preview surface.
 
 ### 15.3 Editor actions
 
@@ -1048,11 +1226,20 @@ Provide:
 - Run current cell in Python session.
 - Run file in Python session.
 - Run file isolated through the existing analysis system.
+- Record whether selection/cell/file bytes match the saved revision or came from
+  a dirty buffer; never autosave merely to make an execution easier to describe.
 
 The UI should explain the difference:
 
 - **Run in session:** fast and stateful, uses existing variables.
 - **Run isolated:** fresh process, more reproducible.
+
+Code executed in a session may create, modify, rename, or delete project files.
+The Phase 4 acceptance flow must verify that those changes use the ordinary
+workspace lifecycle: clean open files refresh, dirty buffers require an
+explicit conflict decision, newly created files become discoverable, and
+existing editors/viewers open the result. Compute does not infer artifacts by
+diffing the whole project tree.
 
 ### 15.4 Client surfaces
 
@@ -1120,12 +1307,14 @@ Treat these as initial engineering limits, not permanent product guarantees:
 | Bridge frame                   |                      16 MiB |
 | Pending executions             |                          16 |
 | Single text output event       |                     256 KiB |
-| Retained output per execution  |                      64 MiB |
-| PNG representation             |                      32 MiB |
+| Retained output per execution  |                       8 MiB |
+| Retained output per session    |                      32 MiB |
+| PNG decoded representation     |                       8 MiB |
+| Store image defense-in-depth   |                      32 MiB |
 | In-memory recent transcript    | Bounded by events and bytes |
-| Graceful shutdown deadline     |                   5 seconds |
-| Heartbeat timeout              |                  10 seconds |
-| Unresponsive → lost escalation |                  30 seconds |
+| Bridge shutdown stage          |                   5 seconds |
+| Transport shutdown round trip  |                  15 seconds |
+| Idle/running liveness interval |                    1 second |
 
 Every truncation must produce a visible persisted marker.
 
@@ -1148,18 +1337,21 @@ Idle shutdown applies only when:
 
 - No execution is active.
 - The queue is empty.
-- No current client lease references the session.
 - The idle timeout has elapsed.
 - The host is not in a transient suspend/resume state.
 
-Scient emits a warning event before shutdown.
+Phase 3 defaults the idle timeout to disabled. Before product code enables it,
+Phase 4 must add client leases and a visible warning; the current server-only
+option is suitable for controlled hosts and tests, not a hidden product policy.
 
 ### 18.3 Concurrency
 
 Candidate defaults:
 
-- Two concurrent kernel startups per server.
-- A configurable maximum number of live sessions.
+- One serialized kernel startup per server in Phase 3; revisit only with
+  measured startup latency and memory evidence.
+- A configurable maximum number of live sessions is deferred until measured;
+  Phase 3 has no hidden session-count eviction policy.
 - One active execution per session.
 - 16 queued executions per session.
 - Bounded output and artifact storage.
@@ -1215,6 +1407,12 @@ Agent-created sessions are owned by environment, project, thread, provider
 session, and operation lineage. An agent cannot attach to a user's interactive
 session without an explicit future sharing grant.
 
+Ownership changes neither the scientific record nor its review location.
+Agent-triggered executions appear in the same project compute history, use the
+same figure and file viewers, and publish through the same project-result
+contract as manual executions. Attribution identifies the initiating actor and
+operation; it does not create an agent-only session database or output UI.
+
 ### 19.3 Later MCP tools
 
 - `compute_session_start`
@@ -1230,6 +1428,14 @@ rather than requiring agents to scrape terminal output.
 ---
 
 ## 20. Implementation Phases
+
+Phases 0-4 form the one required vertical sequence: architecture, neutral
+foundation, Python transport, durable service, then the first human product
+loop. Work after Phase 4 is dependency-gated rather than numerically serialized.
+Hardening, richer scientific affordances, additional language adapters, and the
+agent pilot may advance independently when their stated prerequisites are met.
+In particular, a real R adapter does not wait for agent support, and an agent
+pilot does not wait for every rich renderer.
 
 ### Phase 0: Architecture record and focused spike
 
@@ -1289,7 +1495,8 @@ packaging is required before release.
 - Partial and combined protocol frames.
 - Oversized and malformed frames.
 - Fake non-Jupyter transport drives full session lifecycle.
-- Fake R adapter over the Jupyter transport abstraction.
+- Fake second-language adapter drives the simulator without importing Python or
+  claiming a real Jupyter cross-language launch proof.
 - Cancellation and restart races against the simulator.
 
 **Exit gate:** `@scientfactory/compute` imports no server, Python, Jupyter,
@@ -1324,9 +1531,15 @@ UI, or analysis code. The language-boundary test passes in CI.
 - Bridge crash → `dead`/`lost`.
 - Process-tree death on cancel.
 
-**Exit gate:** A real Python kernel reliably executes, interrupts, restarts,
-emits PNG output, and terminates without orphan processes on macOS, Windows,
-and Linux.
+**Implementation gate:** On the primary development host, a real Python kernel
+reliably executes, interrupts, restarts, emits PNG output, and terminates without
+orphan processes, while every deterministic protocol/process boundary below is
+green. Passing this gate permits Phase 3 implementation; it does not close
+cross-platform qualification.
+
+**Cross-platform qualification gate:** The same real-kernel lifecycle and
+process-tree proof passes on macOS, Windows, and Linux before cross-platform or
+release readiness is claimed.
 
 #### Phase 2 implementation plan
 
@@ -1590,8 +1803,8 @@ sanitization result. Only explicitly session-owned temporary paths may differ
 between the two plans. Readiness requires:
 
 - CPython 3.10 or newer;
-- importable `jupyter_client` 8.6 or newer;
-- importable `ipykernel` 6.29 or newer;
+- installed `jupyter_client` 8.6 or newer;
+- installed `ipykernel` 6.29 or newer;
 - successful kernel startup and `kernel_info_request`;
 - Python language identity returned by the kernel.
 
@@ -1603,12 +1816,14 @@ to distinct actionable verification messages. Verification never runs
 `pip`, writes into the environment, registers a kernelspec, or imports large
 scientific packages merely to discover their versions.
 
-The environment fingerprint includes executable identity, Python
-implementation/version, prefix, and the discovered versions or absence of
-required bridge/kernel distributions. It is provenance, not a safe
+The environment fingerprint includes the executable's canonical path and
+modification time, Python implementation/version/architecture, prefixes and
+platform, and the discovered versions or absence of required bridge/kernel
+distributions. It is provenance, not a safe
 verification-cache key: package contents can change without changing the
-interpreter executable. Phase 2 does not cache verification. Phase 3 must
-either reverify before session launch or define a stronger invalidation proof.
+interpreter executable. Phase 3 reuses a probe for at most 30 seconds across
+discovery, verification, and fingerprinting during startup; this is a startup
+deduplication window, not a durable readiness cache.
 
 ##### 2.7 Launch and environment policy
 
@@ -1715,12 +1930,15 @@ integrity or kernel liveness is lost.
    different execution is active.
 2. Call the kernel manager interrupt API for the matching active execution.
 3. Emit `interrupt-result: interrupted` when the signal is delivered, or
-   `terminal` if completion won the race. Rejection or a 10-second response
-   timeout fails the interrupt call without inventing a second request ID.
+   `terminal` if completion won the race. The bridge waits up to 2 seconds for
+   busy and 2 seconds for settlement; the transport caps the whole response at
+   10 seconds. Rejection or timeout fails the interrupt call without inventing
+   a second request ID.
 4. Continue correlating the active request's reply-plus-idle.
 5. Complete the execute request as `cancelled` when interruption is observed.
-6. If idle does not return within 10 seconds, report unresponsive and leave
-   destructive restart to the caller; do not silently replace the namespace.
+6. If idle does not return within the bounded settlement window, report timeout
+   and leave destructive restart to the caller; do not silently replace the
+   namespace.
 
 The integration proof sets a variable before an infinite loop and confirms it
 still exists after `KeyboardInterrupt`.
@@ -1751,9 +1969,9 @@ active execution is lost with the channel rather than falsely cancelled.
 6. Verify the recorded kernel PID is no longer alive.
 7. Emit `shutdown-complete`, flush stdout, and exit zero.
 
-Node waits for `shutdown-complete`, clean protocol EOF, and bridge exit.
-Missing any one of these triggers process-tree cancellation and a shutdown
-error. Repeated shutdown/finalization is idempotent.
+Node waits for `shutdown-complete`, then closes the event stream and cancels the
+owned process tree as an idempotent final cleanup. A missing acknowledgement or
+failed bridge shutdown is loss, not clean completion.
 
 **Loss**
 
@@ -1845,9 +2063,9 @@ When enabled, it proves:
 10. forced cancellation leaves both recorded PIDs dead.
 
 Cross-platform CI must provision this fixture on macOS, Windows, and Linux
-before the Phase 2 exit gate can pass. Local absence may skip only the real
-kernel suite with a visible reason; it may not skip protocol, bridge-unit, or
-adapter tests.
+before Phase 2 cross-platform qualification can pass. Local absence may skip
+only the real-kernel suite with a visible reason; it may not skip protocol,
+bridge-unit, or adapter tests.
 
 ##### 2.12 Implementation sequence and review gates
 
@@ -1868,12 +2086,13 @@ independently verifiable steps:
 6. **Transport:** Effect scope ownership, immediate stream drains, event queue,
    command mapping, error and finalizer behavior.
 7. **Real-kernel proof:** state, image, interrupt, restart, crashes, process
-   liveness, connection-file cleanup on all three operating systems.
+   liveness, and connection-file cleanup on the primary host for implementation;
+   repeat on all three operating systems for cross-platform qualification.
 8. **Boundary review:** dependency, seam, security, failure-semantics, and
    no-scope-creep audit.
 
 Do not begin Phase 3 merely because the happy-path integration test passes.
-Phase 2 is complete only when:
+The Phase 2 implementation candidate is complete only when:
 
 - all protocol inputs are schema-decoded and state-validated;
 - no user code runs before ownership/version/capability negotiation succeeds;
@@ -1891,11 +2110,12 @@ Phase 2 is complete only when:
 - focused format, lint, package/server typecheck, unit, Python-unit,
   real-kernel, seam, and `git diff --check` validations pass.
 
-Before implementation starts, a human must accept this ADR or explicitly
-approve Phase 2 against its proposed status. Packaging an app-owned Python
-runtime remains a separate decision. If the selected-environment proof is not
-reliable enough for release, Phase 2 reports that evidence rather than quietly
-expanding into a Python distribution project.
+Phase 3 implementation may proceed after this gate passes on the primary host,
+while the qualification ledger continues to show unexecuted platforms as
+pending. Packaging an app-owned Python runtime remains a separate decision. If
+the selected-environment proof is not reliable enough for release, Phase 2
+reports that evidence rather than quietly expanding into a Python distribution
+project.
 
 ---
 
@@ -1909,13 +2129,16 @@ expanding into a Python distribution project.
 - Implement `ComputeSessionService.ts`.
 - Implement bounded queueing (one active, 16 pending, FIFO).
 - Implement generation semantics and stale-command rejection.
-- Implement lifecycle supervision (heartbeat, idle timer, unresponsive → lost).
+- Implement idle and running kernel liveness supervision, optional idle timer,
+  and direct loss on failed liveness.
 - Implement `LocalComputeStore.ts` (session.json, journal.ndjson, execution
   records, output.ndjson, outputs/).
 - Persist requests, results, output, and PNG files.
 - Recover interrupted sessions as `lost` on next boot.
 - Add `compute-output` asset resource and `AssetAccess` resolution.
-- Add explicit cleanup and retention accounting.
+- Add a metadata-preserving cleanup primitive and retention accounting. Defer
+  the product retention policy and its service/RPC caller until that policy is
+  accepted explicitly.
 - Wire server layers in `server.ts`.
 
 **Tests:**
@@ -1943,10 +2166,20 @@ historical truth or leaving a false "running" state.
 - Add read/operate authorization in `RpcAuthorization.ts`.
 - Wire server handlers in `ws.ts` with `"rpc.aggregate": "compute"`.
 - Add `packages/client-runtime/src/state/compute.ts`.
-- Add environment selection UI in `apps/web/src/scient/compute/`.
+- Add the adapter-driven Scientific Computing settings page, initially with the
+  Python adapter.
+- Separate user-level language enablement and runtime defaults from the exact
+  runtime selected and recorded for a project session.
+- Show detected/configured runtime identity, readiness, missing requirements,
+  and supported capabilities without installing or mutating the environment.
+- Add project/session environment selection UI in
+  `apps/web/src/scient/compute/`.
 - Add execution transcript, stdout/stderr, traceback, and PNG rendering.
 - Add editor actions (run selection, cell, file in session).
 - Add interrupt, restart, and stop controls.
+- Record saved-versus-dirty source truth and the exact submitted code/hash.
+- Keep source, transcript, figures, and generated project files connected to the
+  ordinary editor, workspace tree, and typed viewers.
 - Update `scient-analysis-seams.json` with new owned roots and diff signals.
 - Update release-smoke inventory.
 - Add user and internal documentation.
@@ -1956,19 +2189,58 @@ historical truth or leaving a false "running" state.
 - Transcript folding of snapshot + delta + out-of-order chunks.
 - Bounded retention.
 - Stale-generation rejection.
+- Settings: disabling Python stops offering it for a new session but preserves
+  history; enabling it performs discovery only; choosing a default does not
+  change an existing session's recorded runtime.
+- The settings renderer consumes the adapter registry/capability model without
+  a Python-only branch in the shared settings domain.
 - End-to-end: select Python, start session, run two state-dependent
   executions, view a figure, interrupt, restart, review history after app
   restart.
+- Workspace lifecycle: computation modifies a clean open file, conflicts with a
+  dirty buffer, and creates a new project file without a hidden compute copy.
 
 **Product exit gate:** A scientist can:
 
-1. Select Python.
-2. Start a project session.
-3. Execute dependent pieces of code.
-4. Inspect text and a figure.
-5. Interrupt a long operation.
-6. Restart the namespace.
-7. Review the prior history after restarting Scient.
+1. Open Scientific Computing settings, enable Python, and understand whether an
+   exact runtime is ready or what requirement is missing.
+2. Select Python and an exact project runtime.
+3. Start a project session.
+4. Execute dependent pieces of code.
+5. Inspect text and a figure.
+6. Interrupt a long operation.
+7. Restart the namespace.
+8. Review the prior history after restarting Scient.
+9. Return from an execution to its ordinary source editor and open its figure
+   through the existing preview surface.
+10. Observe computation-created project files through the normal workspace
+    lifecycle.
+
+### Phase 4.1: Portable project results
+
+**Purpose:** Let a scientist deliberately turn retained operational output into
+a durable, shareable project result without making private session history a
+second project filesystem.
+
+**Implements:**
+
+- Explicit promotion of a terminal retained execution into a deterministic
+  project `results/` destination.
+- Atomic staging and rename, content-hash verification, collision and symlink
+  refusal, idempotent retry, and redaction of machine-local details.
+- A compute-specific publication service and receipt that reuse the established
+  runtime-neutral semantics without importing `AnalysisService`, disguising an
+  execution as `AnalysisRun`, or creating a universal artifact package.
+- Session generation and prior-execution lineage sufficient to state honestly
+  when the promoted result depended on earlier in-memory state.
+
+**Exit gate:** A promoted result is ordinary project material, opens through
+existing viewers, preserves provenance, and never claims standalone
+reproducibility when its inputs included unrecorded session state.
+
+Phase 4.1 is not required to begin Phase 4 and does not complicate the first
+manual loop. It is required before retained compute output is described as a
+portable or shareable project result.
 
 ---
 
@@ -1989,7 +2261,12 @@ historical truth or leaving a false "running" state.
 - Add corruption isolation.
 - Add stale-process cleanup using PID, start time, and owner token.
 - Complete Windows and Linux packaged-app acceptance.
-- Decide and, if required, implement the app-owned bridge runtime.
+- Decide from measured startup, support, and packaging evidence whether an
+  optional app-owned Jupyter bridge runtime is required. If so, acquire it only
+  on demand; do not add every language runtime to the base application.
+- If an optional app-owned component or managed runtime is separately approved,
+  add language-scoped download, update, repair, disk-usage, and removal controls
+  to the same settings page.
 
 **Tests:**
 
@@ -2042,9 +2319,18 @@ or provenance.
 - MCP read and execute capabilities.
 - Structured execution results.
 - Cross-provider isolation.
+- The same project compute history, source associations, viewers, and result
+  publication used by manual executions.
+- User-visible attribution and authorized interrupt, restart, and stop control.
 
 **Exit gate:** No provider can inspect or operate another provider's session,
-and agents cannot attach to user sessions without an explicit grant.
+agents cannot attach to user sessions without an explicit grant, and no agent
+execution or result exists only in a provider-private scientific history.
+
+A narrow, feature-gated pilot may begin after Phase 4 product acceptance, the
+minimum Phase 5 reliability gates for gap recovery/output bounds/process
+cleanup, and implementation of the operation envelope. It does not wait for all
+Phase 6 usability work.
 
 ---
 
@@ -2052,19 +2338,22 @@ and agents cannot attach to user sessions without an explicit grant.
 
 **R:**
 
-Add a real R adapter using the existing Jupyter transport:
+Add a real R adapter using the existing Jupyter transport when that is the best
+measured fit:
 
 - R discovery.
 - IRkernel verification.
 - R diagnostic normalization.
 - R variable inspection.
+- Exact selected-kernel launch independent from any Python bridge host.
 
 Reuse: session coordinator, Jupyter transport, persistence, output rendering,
 authorization, artifact resolution.
 
 **Julia:**
 
-Repeat through IJulia.
+Repeat through IJulia, with the same exact-runtime and optional-acquisition
+rules.
 
 **MATLAB:**
 
@@ -2076,6 +2365,15 @@ Evaluate:
 
 The existing compute coordinator must not require modification merely to
 support a different transport.
+
+Every language is independently optional. Adding one adapter must not make its
+runtime, packages, transport host, or license a prerequisite for users of
+another language or for Scient startup.
+
+Each accepted adapter registers its language metadata, discovery/configuration
+controls, readiness, requirements, and capabilities with the existing
+Scientific Computing settings model. Adding R, Julia, or MATLAB must not require
+a second settings page or Python-specific changes to the shared settings domain.
 
 ---
 
@@ -2104,13 +2402,15 @@ receipts, or session and terminal-run lifecycles.
 
 Separate three decisions:
 
-1. User-selected scientific Python (first release).
-2. App-owned bridge runtime (separate proposal after spike evidence).
-3. Fully managed scientific Python environment (separate proposal covering
-   Python version, package baseline, upgrades, disk usage, and package
-   installation policy).
+1. User-selected external runtime for one language (Python first).
+2. Optional app-owned transport host, such as the Jupyter bridge runtime
+   (separate proposal after measured packaging/support evidence).
+3. Optional managed scientific environment for one language (separate proposal
+   covering runtime version, package baseline, upgrades, disk usage, removal,
+   and package installation policy).
 
-Evidence for one does not automatically approve the others.
+Evidence for one does not automatically approve the others, and approval for
+one language does not add its runtime or license to every Scient installation.
 
 ---
 
@@ -2174,35 +2474,68 @@ The focused suite covers:
   late output, kernel death during execution.
 - Persistence: interrupted writes, corrupted records, hash mismatch, path
   traversal, server-restart recovery to `lost`.
-- Client folding: snapshot + delta, out-of-order chunks, bounded retention,
-  gap recovery.
+- Bounded snapshot-plus-notification delivery with monotonic recovery cursors;
+  client gap recovery remains a Phase 4 acceptance item.
 - Seams: `pnpm analysis:seams:check` extended to compute roots.
+
+### 23.1 Qualification ledger
+
+Keep evidence here, or in a later dedicated qualification record, rather than
+encoding it into the architecture status.
+
+| Gate                                           | Current evidence                                                                                                                                                            | Status                              |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Architecture                                   | Product principles and domain/dependency boundaries accepted by the owner                                                                                                   | Accepted                            |
+| Phase 1-3 implementation candidate             | Focused compute/server/Python suites, real Python 3.12 kernel, typechecks, targeted format/lint, seam check, and production server build pass on the current macOS worktree | Local evidence; under qualification |
+| Stable candidate                               | Phase 3 remains an uncommitted worktree patch and is not based on current `origin/main`                                                                                     | Pending                             |
+| Phase 2 real-kernel portability                | ADR requires macOS, Windows, and Linux; the proposed hosted workflow covers macOS/Linux but is not yet committed or run, and Windows is absent                              | Pending                             |
+| Phase 4 product acceptance                     | Scientific Computing settings, RPC, authorization, client folding, editor/results surface, workspace freshness flow, and visual acceptance are not implemented              | Not started                         |
+| Packaged cross-platform and release acceptance | Phase 5 packaged-app tests, current-main integration, hosted required checks, and explicit release approval                                                                 | Pending                             |
+
+Local test counts are evidence for one exact snapshot, not a substitute for a
+gate above. Phase 2 real-kernel portability and Phase 5 packaged-app acceptance
+remain distinct claims.
 
 ---
 
-## 24. Final Recommendation
+## 24. Accepted Recommendation
 
-Approve the following architectural direction:
+Implement and qualify the following architectural direction:
 
 1. `ComputeSession` as a separate stateful scientific domain, not an analysis
    mode.
-2. Python first.
-3. Jupyter through a framed bridge, not Node-native ZMQ.
-4. Duplex process supervision as a shared execution foundation.
-5. Honest generation, interrupt, restart, and loss semantics.
-6. Focused local persistence with filesystem as canonical truth.
-7. Compute-owned initial outputs, no premature shared artifact migration.
-8. One default project session in the first UI.
-9. No agent execution before the operation envelope.
-10. No managed Python or shared artifact migration without separate evidence.
-11. Prove the foundation with Python, then validate cross-language reuse with
-    R.
-12. Extract broader shared abstractions only after real duplication is
+2. One project-centered scientific experience: ordinary source files and
+   editors, one compute history, existing typed viewers, and explicit portable
+   project results.
+3. Stateful session execution and isolated analysis execution as complementary,
+   visibly distinct actions.
+4. A polyglot core with independently optional language runtimes, transport
+   dependencies, managed downloads, and proprietary licenses.
+5. Python first; Jupyter through a framed bridge for compatible kernels, not
+   Node-native ZMQ and not as a universal language requirement.
+6. Duplex process supervision as a shared execution foundation.
+7. Honest generation, interrupt, restart, loss, exact submitted-code, and
+   saved-versus-dirty source semantics.
+8. Project files as durable source truth; `computeDir` as operational history,
+   never a second project filesystem.
+9. Compute-owned initial outputs and explicit provenance-preserving promotion,
+   without premature shared artifact migration.
+10. One default project session in the first UI.
+11. Human and later agent operations in the same scientific system and review
+    surface, with actor-specific authorization and ownership.
+12. No agent execution before the operation envelope and minimum reliability
+    gates.
+13. No managed runtime or shared artifact migration without separate evidence
+    and explicit user choice.
+14. Prove the foundation with Python, then validate transport-host/kernel
+    separation with a real second-language adapter.
+15. Extract broader shared abstractions only after real duplication is
     demonstrated.
 
-Then implement the smallest complete vertical slice (Phases 0–4) before
-expanding into variables, richer MIME, managed environments, additional
-languages, or agent operations.
+Complete the smallest human vertical slice (Phases 0–4) before expanding the
+product surface. After that, advance portable results, reliability, richer
+scientific affordances, additional languages, and the agent pilot by their
+dependency gates rather than pretending the roadmap must be one serial queue.
 
 This plan keeps the long-term foundation scalable while ensuring the first
 investment produces immediate scientific value rather than a large collection

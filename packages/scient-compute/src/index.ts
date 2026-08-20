@@ -2,5 +2,8 @@ export * from "./capabilities.ts";
 export * from "./contract.ts";
 export * from "./executionStateMachine.ts";
 export * from "./protocolCodec.ts";
+export * from "./queue.ts";
+export * from "./record.ts";
+export * from "./service.ts";
 export * from "./sessionStateMachine.ts";
 export * from "./simulator.ts";

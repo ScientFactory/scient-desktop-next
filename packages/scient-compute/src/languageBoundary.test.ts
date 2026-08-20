@@ -25,16 +25,16 @@ import { transitionComputeSessionStatus } from "./sessionStateMachine.ts";
 import { createSimulatedComputeTransport } from "./simulator.ts";
 
 /**
- * A fake R adapter over the reusable Jupyter-bridge transport boundary.
+ * A fake R adapter paired with the language-neutral simulated transport.
  *
- * This exit gate proves two separate boundaries: the session lifecycle can be
- * driven by a language-neutral transport, and an R adapter can provide
- * language-specific discovery and launch preparation while selecting the
- * Jupyter-bridge transport kind. The simulator is deliberately not a Jupyter
- * protocol implementation; this test is not a Jupyter integration proof.
+ * This exit gate proves that session lifecycle is independent from Python and
+ * that another adapter can provide discovery, launch preparation, diagnostics,
+ * and fingerprints. It deliberately makes no claim that the Python-hosted
+ * Jupyter bridge can launch R; a real R kernel is the proof for that later
+ * transport-host/kernel boundary.
  */
 const R_LANGUAGE = ComputeLanguageId.make("r");
-const JUPYTER_BRIDGE_TRANSPORT = ComputeTransportKind.make("jupyter-bridge");
+const SIMULATED_TRANSPORT = ComputeTransportKind.make("simulated");
 
 const profile: ComputeRuntimeProfile = {
   languageId: R_LANGUAGE,
@@ -55,7 +55,7 @@ const stripFrameDecoration = (frame: string): string =>
 
 const fakeRAdapter: ComputeLanguageAdapter = {
   languageId: R_LANGUAGE,
-  transportKind: JUPYTER_BRIDGE_TRANSPORT,
+  transportKind: SIMULATED_TRANSPORT,
   discover: (request) =>
     Effect.succeed(
       request.configuredExecutable === null
@@ -132,16 +132,17 @@ describe("compute language boundary", () => {
           requiredCapabilities: [...REQUIRED_COMPUTE_CAPABILITIES],
         };
 
+        const runtime = {
+          languageId: R_LANGUAGE,
+          transportKind: SIMULATED_TRANSPORT,
+          protocolVersion: 1,
+          languageVersion: discovered!.languageVersion,
+          platform: "simulated",
+          transportProcessId: 4242,
+          runtimeProcessId: 4243,
+        };
         const transport = createSimulatedComputeTransport({
-          runtime: {
-            languageId: R_LANGUAGE,
-            transportKind: JUPYTER_BRIDGE_TRANSPORT,
-            protocolVersion: 1,
-            languageVersion: discovered!.languageVersion,
-            platform: "simulated",
-            transportProcessId: 4242,
-            runtimeProcessId: 4243,
-          },
+          runtime,
           capabilities: [...REQUIRED_COMPUTE_CAPABILITIES],
           resolveExecution: (code) =>
             code === "loop()"
@@ -165,13 +166,13 @@ describe("compute language boundary", () => {
 
         const ready = yield* next;
         expect(ready._tag).toBe("ready");
-        session = transitionComputeSessionStatus(session, "ready");
+        session = yield* transitionComputeSessionStatus(session, "ready");
 
         // Repeated work reuses one channel. The simulator proves the
         // language-neutral lifecycle boundary; it deliberately does not claim
         // to execute code or model a runtime namespace.
         const firstRequest = ComputeRequestId.make(executionId);
-        let execution: ComputeExecutionStatus = transitionComputeExecutionStatus(
+        let execution: ComputeExecutionStatus = yield* transitionComputeExecutionStatus(
           "queued",
           "submitting",
         );
@@ -181,11 +182,12 @@ describe("compute language boundary", () => {
           code: "answer <- 42; answer",
         });
         expect((yield* next)._tag).toBe("accepted");
-        execution = transitionComputeExecutionStatus(execution, "running");
+        execution = yield* transitionComputeExecutionStatus(execution, "running");
         const output = yield* next;
         expect(output).toEqual({
           _tag: "output",
           requestId: firstRequest,
+          generation,
           output: textOutput(1, "42\n"),
           image: null,
         });
@@ -193,14 +195,15 @@ describe("compute language boundary", () => {
         expect(completed).toEqual({
           _tag: "completed",
           requestId: firstRequest,
+          generation,
           outcome: "succeeded",
         });
-        execution = transitionComputeExecutionStatus(execution, "succeeded");
+        execution = yield* transitionComputeExecutionStatus(execution, "succeeded");
         expect(execution).toBe("succeeded");
 
         // Work a user gives up on ends as cancelled, and the session survives it.
         const runawayRequest = ComputeRequestId.make("execution-2");
-        let runaway: ComputeExecutionStatus = transitionComputeExecutionStatus(
+        let runaway: ComputeExecutionStatus = yield* transitionComputeExecutionStatus(
           "queued",
           "submitting",
         );
@@ -210,9 +213,9 @@ describe("compute language boundary", () => {
           code: "loop()",
         });
         expect((yield* next)._tag).toBe("accepted");
-        runaway = transitionComputeExecutionStatus(runaway, "running");
+        runaway = yield* transitionComputeExecutionStatus(runaway, "running");
         expect((yield* next)._tag).toBe("output");
-        runaway = transitionComputeExecutionStatus(runaway, "interrupting");
+        runaway = yield* transitionComputeExecutionStatus(runaway, "interrupting");
         yield* channel.interrupt({
           requestId: runawayRequest,
           expectedGeneration: generation,
@@ -220,25 +223,26 @@ describe("compute language boundary", () => {
         expect(yield* next).toEqual({
           _tag: "completed",
           requestId: runawayRequest,
+          generation,
           outcome: "cancelled",
         });
-        runaway = transitionComputeExecutionStatus(runaway, "cancelled");
+        runaway = yield* transitionComputeExecutionStatus(runaway, "cancelled");
         expect(runaway).toBe("cancelled");
         expect(session).toBe("ready");
 
         // A restart replaces the namespace, so the generation moves with it.
-        session = transitionComputeSessionStatus(session, "restarting");
+        session = yield* transitionComputeSessionStatus(session, "restarting");
         generation = nextComputeSessionGeneration(generation);
         yield* channel.restart({
           expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
           nextGeneration: generation,
         });
-        expect(yield* next).toEqual({ _tag: "restarted", generation: 2 });
-        session = transitionComputeSessionStatus(session, "ready");
+        expect(yield* next).toEqual({ _tag: "restarted", generation: 2, runtime });
+        session = yield* transitionComputeSessionStatus(session, "ready");
 
-        session = transitionComputeSessionStatus(session, "stopping");
+        session = yield* transitionComputeSessionStatus(session, "stopping");
         yield* channel.shutdown({ expectedGeneration: generation });
-        session = transitionComputeSessionStatus(session, "stopped");
+        session = yield* transitionComputeSessionStatus(session, "stopped");
 
         expect(session).toBe("stopped");
         expect(fingerprint.contributors).toEqual(["executable", "languageVersion"]);

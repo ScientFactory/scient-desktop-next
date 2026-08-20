@@ -245,3 +245,99 @@ describe("compute protocol messages", () => {
     }),
   );
 });
+
+/**
+ * The decoder's buffer grows, compacts, and slides in place, and that is the
+ * one piece of this module where an off-by-one would be invisible in a
+ * hand-written case and corrupting in a real pipe. So it is driven with
+ * arbitrary frame sizes cut at arbitrary boundaries, from a fixed seed so a
+ * failure is a failure anyone can reproduce.
+ */
+describe("compute frame decoder under load", () => {
+  const nextRandom = (seed: number): (() => number) => {
+    let state = seed >>> 0;
+    return () => {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return state / 0x100000000;
+    };
+  };
+
+  it.effect("reassembles a thousand frames however a pipe happens to split them", () =>
+    Effect.gen(function* () {
+      const random = nextRandom(20260820);
+      const payloads: Array<Uint8Array> = [];
+      const frames: Array<Uint8Array> = [];
+      for (let index = 0; index < 1000; index += 1) {
+        // Zero-length, tiny, and past the 4 KiB initial capacity, in the
+        // proportions a real session produces: mostly small control messages
+        // with the occasional figure.
+        const size =
+          random() < 0.05
+            ? 0
+            : random() < 0.9
+              ? Math.floor(random() * 200)
+              : Math.floor(random() * 20_000);
+        const payload = new Uint8Array(size);
+        for (let byte = 0; byte < size; byte += 1) payload[byte] = Math.floor(random() * 256);
+        payloads.push(payload);
+        frames.push(yield* encodeComputeFrame(payload));
+      }
+
+      const wire = new Uint8Array(frames.reduce((total, frame) => total + frame.byteLength, 0));
+      let offset = 0;
+      for (const frame of frames) {
+        wire.set(frame, offset);
+        offset += frame.byteLength;
+      }
+
+      const decoder = makeComputeFrameDecoder();
+      const received: Array<Uint8Array> = [];
+      let cursor = 0;
+      while (cursor < wire.byteLength) {
+        // A pipe delivers whatever it likes: one byte, a header split in two,
+        // several whole frames at once.
+        const chunkSize = Math.max(1, Math.floor(random() * 9000));
+        const chunk = wire.subarray(cursor, Math.min(cursor + chunkSize, wire.byteLength));
+        cursor += chunk.byteLength;
+        received.push(...(yield* decoder.push(chunk)));
+      }
+      yield* decoder.finish;
+
+      expect(received).toHaveLength(payloads.length);
+      for (let index = 0; index < payloads.length; index += 1) {
+        expect(received[index]).toEqual(payloads[index]);
+      }
+    }),
+  );
+
+  it.effect("holds one frame's worth of memory, not one stream's", () =>
+    Effect.gen(function* () {
+      const decoder = makeComputeFrameDecoder({ maxFrameByteLength: 64 * 1024 });
+      const large = new Uint8Array(60 * 1024).fill(7);
+      // Two hundred large frames through one decoder: a buffer that only ever
+      // grew would be holding twelve megabytes by the end of this.
+      for (let round = 0; round < 200; round += 1) {
+        const frame = yield* encodeComputeFrame(large);
+        const half = Math.floor(frame.byteLength / 2);
+        expect(yield* decoder.push(frame.subarray(0, half))).toEqual([]);
+        const completed = yield* decoder.push(frame.subarray(half));
+        expect(completed).toHaveLength(1);
+        expect(completed[0]?.byteLength).toBe(large.byteLength);
+      }
+      yield* decoder.finish;
+    }),
+  );
+
+  it.effect("refuses a hostile length before it reserves anything for it", () =>
+    Effect.gen(function* () {
+      const decoder = makeComputeFrameDecoder();
+      // The largest length a four-byte prefix can announce, from a peer that
+      // then sends nothing. Reserving it first would be four gibibytes.
+      const error = yield* Effect.flip(decoder.push(announcedLength(0xffffffff)));
+
+      expect(error.reason).toBe("frame-too-large");
+      const after = yield* Effect.flip(decoder.push(frameOf("{}")));
+      expect(after.reason).toBe("stream-desynchronized");
+    }),
+  );
+});

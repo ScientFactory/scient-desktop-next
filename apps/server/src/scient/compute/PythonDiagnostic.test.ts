@@ -1,7 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import type { ComputeRuntimeErrorReport } from "@scientfactory/compute";
-
 import { normalizePythonDiagnostic } from "./PythonDiagnostic.ts";
 
 describe("python diagnostic normalization", () => {
@@ -93,6 +91,14 @@ describe("python diagnostic normalization", () => {
       traceback: ["real line", "\u001B[31m\u001B[0m", "   ", "another line"],
     });
     expect(diagnostics[0]!.traceback).toEqual(["real line", "   ", "another line"]);
+  });
+
+  it("spends the line limit on lines that say something", () => {
+    // A traceback that opens with two hundred colour resets still has to show
+    // the frames that follow them.
+    const traceback = [...Array<string>(200).fill("\u001B[0m"), "real line", "another line"];
+    const diagnostics = normalizePythonDiagnostic({ name: "E", value: "v", traceback });
+    expect(diagnostics[0]!.traceback).toEqual(["real line", "another line"]);
   });
 
   it("truncates safely on a multi-byte character boundary", () => {

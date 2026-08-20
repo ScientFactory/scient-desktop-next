@@ -96,13 +96,21 @@ describe("compute environment policy", () => {
       expect(environment["PYTHONUNBUFFERED"]).toBe("1");
     });
 
-    it("sets Jupyter runtime directory when provided", () => {
-      const { environment } = sanitizeComputeEnvironment(
-        { JUPYTER_CONFIG_DIR: "/evil" },
-        { jupyterRuntimeDir: "/app/tmp/jupyter" },
-      );
-      expect(environment["JUPYTER_RUNTIME_DIR"]).toBe("/app/tmp/jupyter");
+    it("removes the Jupyter overrides that can redirect code, and keeps the one that cannot", () => {
+      const { environment } = sanitizeComputeEnvironment({
+        JUPYTER_CONFIG_DIR: "/evil",
+        JUPYTER_PATH: "/evil",
+        JUPYTER_DATA_DIR: "/evil",
+        IPYTHONDIR: "/evil",
+        // Only chooses where the connection file goes, and a container may have
+        // exactly one writable directory to put it in.
+        JUPYTER_RUNTIME_DIR: "/run/user/1000/jupyter",
+      });
       expect(environment["JUPYTER_CONFIG_DIR"]).toBeUndefined();
+      expect(environment["JUPYTER_PATH"]).toBeUndefined();
+      expect(environment["JUPYTER_DATA_DIR"]).toBeUndefined();
+      expect(environment["IPYTHONDIR"]).toBeUndefined();
+      expect(environment["JUPYTER_RUNTIME_DIR"]).toBe("/run/user/1000/jupyter");
     });
 
     it("does not expose any environment value in removed keys", () => {
@@ -114,6 +122,61 @@ describe("compute environment policy", () => {
         expect(key).not.toContain("sk-very-secret");
         expect(key).not.toContain("hunter2");
       }
+    });
+
+    it("removes a denied key whatever case the host spelled it in", () => {
+      // Windows treats these as one variable and so does Python there, so a
+      // host that exported `PythonPath` is exporting PYTHONPATH.
+      const { environment, removedKeys } = sanitizeComputeEnvironment({
+        PythonPath: "/evil",
+        pythonhome: "/evil",
+        Anthropic_Api_Key: "secret",
+        scient_db_password: "secret",
+        t3_pairing_key: "key",
+        HOME: "/user",
+      });
+      expect(
+        Object.keys(environment)
+          .filter((key) => key !== "HOME")
+          .sort(),
+      ).toEqual(["PYTHONUNBUFFERED", "PYTHONUTF8"]);
+      expect(removedKeys.toSorted()).toEqual([
+        "Anthropic_Api_Key",
+        "PythonPath",
+        "pythonhome",
+        "scient_db_password",
+        "t3_pairing_key",
+      ]);
+    });
+
+    it("leaves one spelling of each override, not two", () => {
+      const { environment } = sanitizeComputeEnvironment({
+        pythonutf8: "0",
+        PythonUnbuffered: "0",
+      });
+      expect(environment).toEqual({ PYTHONUTF8: "1", PYTHONUNBUFFERED: "1" });
+    });
+
+    it("removes the sign-in tokens this application was started with", () => {
+      // Named rather than left to the exhaustive case below, because these are
+      // the credentials likeliest to actually be present -- the server process
+      // is holding them -- and neither is covered by any prefix.
+      const { environment, removedKeys } = sanitizeComputeEnvironment({
+        CLAUDE_CODE_OAUTH_TOKEN: "oauth",
+        GH_TOKEN: "token",
+        ANTHROPIC_AUTH_TOKEN: "token",
+        PATH: "/usr/bin",
+      });
+      expect(Object.keys(environment).toSorted()).toEqual([
+        "PATH",
+        "PYTHONUNBUFFERED",
+        "PYTHONUTF8",
+      ]);
+      expect(removedKeys.toSorted()).toEqual([
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "GH_TOKEN",
+      ]);
     });
 
     it("every denylisted key is removed", () => {

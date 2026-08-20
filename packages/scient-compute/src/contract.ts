@@ -1,26 +1,22 @@
 import * as Schema from "effect/Schema";
-import * as DateTime from "effect/DateTime";
 import type * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
-const EntityId = Schema.NonEmptyString.check(Schema.isMaxLength(128));
-const Slug = Schema.NonEmptyString.check(Schema.isMaxLength(64));
-const Label = Schema.String.check(Schema.isMaxLength(256));
-const ShortText = Schema.String.check(Schema.isMaxLength(4096));
-const StreamText = Schema.String.check(Schema.isMaxLength(1024 * 1024));
-const ContentHash = Schema.NonEmptyString.check(Schema.isMaxLength(256));
-const Sequence = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const ByteLength = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-const Pixels = Schema.Int.check(Schema.isGreaterThan(0));
-const ProcessId = Schema.Int.check(Schema.isGreaterThan(0));
-const ObservedAt = Schema.String.check(
-  Schema.isMaxLength(64),
-  Schema.makeFilter((value: string) =>
-    Option.isSome(DateTime.make(value)) ? true : "Expected an ISO-8601 instant.",
-  ),
-);
+import {
+  ByteLength,
+  ContentHash,
+  EntityId,
+  Label,
+  ObservedAt,
+  Pixels,
+  ProcessId,
+  RuntimeErrorText,
+  Sequence,
+  ShortText,
+  Slug,
+  StreamText,
+} from "./primitives.ts";
 
 export const ComputeSessionId = EntityId.pipe(Schema.brand("ComputeSessionId"));
 export type ComputeSessionId = typeof ComputeSessionId.Type;
@@ -81,8 +77,9 @@ export const TERMINAL_COMPUTE_SESSION_STATUSES: ReadonlySet<ComputeSessionStatus
 
 /**
  * What the session is doing, which is not what has happened to it. A ready
- * session is idle or busy; a session whose heartbeat is late is unresponsive
- * without yet being declared lost; a failed execution leaves the session ready.
+ * session is idle or busy; a running execution whose interrupt does not settle
+ * is unresponsive without yet destroying its namespace; a failed execution
+ * leaves the session ready. Silence alone is valid for long scientific work.
  */
 export const ComputeSessionActivity = Schema.Literals(["idle", "busy", "unresponsive"]);
 export type ComputeSessionActivity = typeof ComputeSessionActivity.Type;
@@ -109,6 +106,23 @@ export const TERMINAL_COMPUTE_EXECUTION_STATUSES: ReadonlySet<ComputeExecutionSt
 /** How a runtime says an execution ended. Loss is reported about the session. */
 export const ComputeExecutionOutcome = Schema.Literals(["succeeded", "failed", "cancelled"]);
 export type ComputeExecutionOutcome = typeof ComputeExecutionOutcome.Type;
+
+/**
+ * What a runtime did with an interrupt request.
+ *
+ * A request is not a result: the code may have finished first (`terminal`), the
+ * runtime may refuse while it is between statements (`rejected`), or it may
+ * accept the signal and never go idle (`timeout`). Collapsing these into
+ * success or failure would leave a caller unable to tell an execution that
+ * survived from one that ended.
+ */
+export const ComputeInterruptOutcome = Schema.Literals([
+  "interrupted",
+  "terminal",
+  "rejected",
+  "timeout",
+]);
+export type ComputeInterruptOutcome = typeof ComputeInterruptOutcome.Type;
 
 export const ComputeOutputStream = Schema.Literals(["stdout", "stderr"]);
 export type ComputeOutputStream = typeof ComputeOutputStream.Type;
@@ -144,6 +158,11 @@ const OutputEnvelope = {
 /**
  * One ordered piece of what a session produced.
  *
+ * `sequence` is the runtime ordering cursor, not a globally unique identifier.
+ * An adapter may derive more than one normalized product from one runtime
+ * report, in which case those products share the cursor and their append order
+ * is the tie-breaker. Durable transcript order is authoritative.
+ *
  * The first product slice renders every member. The union is a closed set on
  * purpose: a representation Scient cannot yet display is either dropped by the
  * transport or reduced to `stream` text, so no client is ever handed a variant
@@ -176,6 +195,37 @@ export const ComputeOutput = Schema.Union([
   }),
 ]);
 export type ComputeOutput = typeof ComputeOutput.Type;
+
+const utf8 = new TextEncoder();
+
+/**
+ * How much of a session's durable transcript one output occupies.
+ *
+ * Counts what is actually kept -- the text of a stream, the text of a
+ * diagnostic, the bytes behind an image -- and not the JSON envelope around it,
+ * so a retention ceiling means the same thing whichever representation a
+ * runtime happened to choose. A transport's own byte estimate answers a
+ * different question, how much memory a queued event holds before anyone has
+ * read it, and is deliberately a separate number.
+ */
+export function computeOutputByteLength(output: ComputeOutput): number {
+  switch (output._tag) {
+    case "stream":
+      return utf8.encode(output.text).length;
+    case "diagnostic":
+      return utf8.encode(
+        [
+          output.diagnostic.errorName,
+          output.diagnostic.message,
+          ...output.diagnostic.traceback,
+        ].join("\n"),
+      ).length;
+    case "image":
+      return output.byteLength;
+    case "system":
+      return output.detail === null ? 0 : utf8.encode(output.detail).length;
+  }
+}
 
 /**
  * What a transport promises to do. A session refuses to start when the runtime
@@ -232,6 +282,12 @@ export type ComputeTransportImageEvent = typeof ComputeTransportImageEvent.Type;
  * `image` carries transient bytes only when `output` is an image; it is null
  * for every other output variant. The bytes are consumed once and never
  * persisted.
+ *
+ * `runtime-error` carries the language-specific report rather than a normalized
+ * `ComputeOutput.diagnostic` because a transport is shared by every language
+ * and cannot normalize one. It carries the same `sequence` and `observedAt` as
+ * an output so the diagnostic a language adapter derives from it lands in the
+ * ordered stream at the point the error actually happened.
  */
 export const ComputeTransportEvent = Schema.Union([
   Schema.TaggedStruct("ready", {
@@ -240,18 +296,32 @@ export const ComputeTransportEvent = Schema.Union([
   }),
   Schema.TaggedStruct("accepted", {
     requestId: ComputeRequestId,
+    generation: ComputeSessionGeneration,
   }),
   Schema.TaggedStruct("output", {
     requestId: Schema.NullOr(ComputeRequestId),
+    generation: ComputeSessionGeneration,
     output: ComputeOutput,
     image: Schema.NullOr(ComputeTransportImageEvent),
   }),
+  Schema.TaggedStruct("runtime-error", {
+    ...OutputEnvelope,
+    requestId: Schema.NullOr(ComputeRequestId),
+    generation: ComputeSessionGeneration,
+    report: Schema.Struct({
+      name: Label,
+      value: RuntimeErrorText,
+      traceback: Schema.Array(ShortText).check(Schema.isMaxLength(200)),
+    }),
+  }),
   Schema.TaggedStruct("completed", {
     requestId: ComputeRequestId,
+    generation: ComputeSessionGeneration,
     outcome: ComputeExecutionOutcome,
   }),
   Schema.TaggedStruct("restarted", {
     generation: ComputeSessionGeneration,
+    runtime: ComputeRuntimeIdentity,
   }),
   Schema.TaggedStruct("lost", {
     reason: ShortText,
@@ -276,7 +346,16 @@ export class ComputeTransportError extends Schema.TaggedErrorClass<ComputeTransp
   },
 ) {}
 
-/** How to start a runtime. Produced by a language adapter, run by a transport. */
+/**
+ * How to start the process a transport supervises.
+ *
+ * For the initial Python adapter this executable is both the Jupyter bridge host
+ * and the selected kernel interpreter. That is not a cross-language invariant:
+ * a later adapter may select an R/Julia/MATLAB runtime while an optional bridge
+ * host launches separately. The first real second-language adapter is the gate
+ * for a typed transport-specific launch extension; the coordinator must not
+ * infer the scientific runtime from this executable.
+ */
 export interface ComputeLaunchPlan {
   readonly executable: string;
   readonly args: ReadonlyArray<string>;
@@ -318,7 +397,10 @@ export interface ComputeShutdownRequest {
  *
  * Commands only say what to ask for; what happened is told by `events`, because
  * a runtime reports interrupts, restarts, and death asynchronously and a
- * command that returned its own result would have to guess.
+ * command that returned its own result would have to guess. `interrupt` is the
+ * one exception, and only because its return value answers a different
+ * question: whether the signal landed at all. What became of the execution it
+ * targeted still arrives on `events`.
  *
  * The channel already identifies the session, so each mutating command carries
  * only its expected generation. This is the stale-command boundary: a delayed
@@ -330,7 +412,7 @@ export interface ComputeChannel {
   readonly execute: (request: ComputeExecuteRequest) => Effect.Effect<void, ComputeTransportError>;
   readonly interrupt: (
     request: ComputeInterruptRequest,
-  ) => Effect.Effect<void, ComputeTransportError>;
+  ) => Effect.Effect<ComputeInterruptOutcome, ComputeTransportError>;
   readonly restart: (request: ComputeRestartRequest) => Effect.Effect<void, ComputeTransportError>;
   readonly shutdown: (
     request: ComputeShutdownRequest,

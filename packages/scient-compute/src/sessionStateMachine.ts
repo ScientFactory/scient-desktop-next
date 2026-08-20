@@ -1,4 +1,7 @@
-import type { ComputeSessionGeneration, ComputeSessionStatus } from "./contract.ts";
+import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+
+import { ComputeSessionStatus, type ComputeSessionGeneration } from "./contract.ts";
 
 /**
  * Lifecycle transitions a session may take.
@@ -29,27 +32,34 @@ const ALLOWED_SESSION_TRANSITIONS: Readonly<
   lost: new Set(),
 };
 
-export class InvalidComputeSessionTransitionError extends Error {
-  readonly current: ComputeSessionStatus;
-  readonly next: ComputeSessionStatus;
-
-  constructor(current: ComputeSessionStatus, next: ComputeSessionStatus) {
-    super(`Compute session status cannot transition from '${current}' to '${next}'.`);
-    this.name = "InvalidComputeSessionTransitionError";
-    this.current = current;
-    this.next = next;
+/**
+ * A transition the lifecycle does not allow.
+ *
+ * Typed for the same reason as its execution counterpart: recovery reads a
+ * stored status back, so an impossible pair is data to report rather than a
+ * defect to crash on.
+ */
+export class InvalidComputeSessionTransitionError extends Schema.TaggedErrorClass<InvalidComputeSessionTransitionError>()(
+  "InvalidComputeSessionTransitionError",
+  {
+    current: ComputeSessionStatus,
+    next: ComputeSessionStatus,
+  },
+) {
+  override get message(): string {
+    return `Compute session status cannot transition from '${this.current}' to '${this.next}'.`;
   }
 }
 
 export function transitionComputeSessionStatus(
   current: ComputeSessionStatus,
   next: ComputeSessionStatus,
-): ComputeSessionStatus {
-  if (current === next) return current;
+): Effect.Effect<ComputeSessionStatus, InvalidComputeSessionTransitionError> {
+  if (current === next) return Effect.succeed(current);
   if (!ALLOWED_SESSION_TRANSITIONS[current].has(next)) {
-    throw new InvalidComputeSessionTransitionError(current, next);
+    return Effect.fail(new InvalidComputeSessionTransitionError({ current, next }));
   }
-  return next;
+  return Effect.succeed(next);
 }
 
 /**

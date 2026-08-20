@@ -1,0 +1,94 @@
+# Runs the part of the compute session's Python work that the main CI lanes
+# cannot: a real Jupyter kernel, on more than one operating system and more than
+# one interpreter version.
+#
+# The bridge's own unit tests need nothing but a standard library and so run on
+# every pull request from `ci.yml`. What is here needs `jupyter_client`,
+# `ipykernel` and a live subprocess tree, which is why it is path-filtered and
+# dispatchable rather than always on.
+#
+# The matrix is deliberately the platforms this suite has been observed to pass
+# on. Windows is absent because it is unverified, not because it is expected to
+# fail: the bridge already degrades to no signal handlers there (an asyncio loop
+# on Windows implements none of them) and falls back to the `shutdown` command,
+# and `interrupt_kernel` takes a different path again. Adding a `windows-2025`
+# entry is the way to find out, and belongs in its own change so that a red
+# result reads as news about Windows rather than as a broken workflow.
+name: Scient Compute Python Kernel
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/scient-compute-python-kernel.yml"
+      - "apps/server/src/scient/compute/**"
+      - "apps/server/src/scient/execution/LocalDuplexProcess.ts"
+      - "packages/scient-compute/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scient-compute-python-kernel-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  real_kernel:
+    name: Real kernel / ${{ matrix.runner }} / Python ${{ matrix.python }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-15]
+        # Both ends of the supported range, because the failures this suite
+        # catches are version-dependent asyncio and kernel-startup behaviour:
+        # 3.10 is the floor the runtime adapter enforces, 3.12 is what a current
+        # user is most likely to already have.
+        python: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /*
+            !/.repos/
+          sparse-checkout-cone-mode: false
+
+      - name: Setup Vite+
+        uses: voidzero-dev/setup-vp@v1
+        with:
+          node-version-file: package.json
+          cache: true
+          run-install: |
+            args:
+              - --filter=t3...
+
+      - name: Setup Python ${{ matrix.python }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install kernel dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          python -m pip install "jupyter_client>=8.6" "ipykernel>=6.29" matplotlib
+
+      # The absolute path rather than `python`: this value becomes the launch
+      # plan's executable, so resolving it once here is what makes the kernel
+      # under test the interpreter this job set up.
+      - name: Run the real-kernel integration suite
+        working-directory: apps/server
+        shell: bash
+        env:
+          # Headless runners have no display, and a figure that opened a window
+          # would hang the execution the test is waiting on.
+          MPLBACKEND: Agg
+        run: |
+          set -euo pipefail
+          SCIENT_TEST_PYTHON="$(python -c 'import sys; print(sys.executable)')"
+          export SCIENT_TEST_PYTHON
+          vp test run src/scient/compute/PythonKernel.integration.test.ts

@@ -197,6 +197,15 @@ jobs:
       - name: Check resource monitor formatting
         run: cargo fmt --manifest-path native/resource-monitor/Cargo.toml -- --check
 
+      # The compute session's Python bridge has no workspace package to run it,
+      # so it would otherwise be the one part of that feature no lane covers.
+      # These tests fake the kernel manager and the channels, so they need only
+      # a standard library and finish in under a second -- the suite that needs
+      # a real kernel lives in `scient-compute-python-kernel.yml` instead.
+      - name: Test compute session Python bridge
+        working-directory: apps/server/src/scient/compute/bridge
+        run: python3 -m unittest discover --pattern 'test_*.py' --verbose
+
       - name: Test resource monitor
         run: cargo test --locked --manifest-path native/resource-monitor/Cargo.toml
 

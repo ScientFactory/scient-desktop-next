@@ -17,6 +17,17 @@ export class DuplexProcess extends Context.Service<DuplexProcess, DuplexProcessP
   "t3/scient/execution/LocalDuplexProcess/DuplexProcess",
 ) {}
 
+/**
+ * How long output is still drained after the direct child has exited.
+ *
+ * Long enough that anything already buffered in the operating-system pipe is
+ * delivered even to a briefly stalled consumer, short enough that a leaked
+ * descendant holding the inherited descriptor cannot stall a consumer for
+ * long. Losing a peer's final protocol frame is the worse failure, so this
+ * errs on the generous side.
+ */
+const OUTPUT_DRAIN_GRACE = "1 second";
+
 function processError(
   operation: DuplexProcessError["operation"],
   message: string,
@@ -89,13 +100,6 @@ const make = Effect.gen(function* () {
           writeGate.withPermits(1),
         );
 
-      const readStream = <E>(stream: Stream.Stream<Uint8Array, E>, name: "stdout" | "stderr") =>
-        stream.pipe(
-          Stream.mapError((cause) =>
-            processError("output", `Unable to read duplex process ${name}.`, cause),
-          ),
-        );
-
       const exitCode = child.exitCode.pipe(
         Effect.map(Number),
         Effect.mapError((cause) =>
@@ -103,16 +107,48 @@ const make = Effect.gen(function* () {
         ),
       );
 
-      // Effect's Node handle targets the detached process group on Unix and uses
-      // taskkill /T /F on Windows. Keep this as a tree operation; the integration
-      // fixture proves a spawned descendant exits with its parent.
-      const cancelProcessTree = child
-        .kill(LOCAL_OWNED_PROCESS_KILL_OPTIONS)
-        .pipe(
-          Effect.mapError((cause) =>
-            processError("cancel", "Unable to stop the duplex process tree.", cause),
+      // A descendant that inherited the child's stdout keeps the pipe open
+      // after the child itself is gone, so end-of-file alone can leave a
+      // consumer pulling forever. Wait for the child to exit, then allow one
+      // drain window so buffered frames — a peer's final protocol reply, for
+      // instance — are still delivered, and only then stop pulling. The exit
+      // outcome is deliberately discarded: a cancelled process exits by
+      // signal, and that is a normal end of output, not a read failure.
+      const outputDrainDeadline = exitCode.pipe(
+        Effect.exit,
+        Effect.andThen(Effect.sleep(OUTPUT_DRAIN_GRACE)),
+      );
+
+      const readStream = <E>(stream: Stream.Stream<Uint8Array, E>, name: "stdout" | "stderr") =>
+        stream.pipe(
+          Stream.mapError((cause) =>
+            processError("output", `Unable to read duplex process ${name}.`, cause),
           ),
+          Stream.haltWhen(outputDrainDeadline),
         );
+
+      // `kill` signals the detached group on Unix and the tree via taskkill on
+      // Windows, falls back to the direct child, and resolves only once that
+      // child has exited — the stop acknowledgement the port promises. A tree
+      // that is already gone reports the absence differently on every platform
+      // (`ESRCH` once reaped, `EPERM` for an unreaped macOS zombie, a non-zero
+      // taskkill exit on Windows), so the child's own liveness, not the signal
+      // result, decides whether cancellation actually failed.
+      const cancelProcessTree = child.kill(LOCAL_OWNED_PROCESS_KILL_OPTIONS).pipe(
+        Effect.catch((cause) =>
+          child.isRunning.pipe(
+            Effect.catchCause(() => Effect.succeed(true)),
+            Effect.flatMap((isRunning) =>
+              isRunning
+                ? Effect.fail(
+                    processError("cancel", "Unable to stop the duplex process tree.", cause),
+                  )
+                : Effect.void,
+            ),
+          ),
+        ),
+      );
+
       return {
         pid: Number(child.pid),
         stdout: readStream(child.stdout, "stdout"),

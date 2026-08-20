@@ -81,6 +81,14 @@ export interface ExecutionProcessRequest {
   readonly args: ReadonlyArray<string>;
   readonly cwd: string;
   readonly environment: Readonly<Record<string, string>>;
+  /**
+   * Whether to merge the host environment into `environment`. Defaults to
+   * `true`, which is what every caller that builds an environment on top of the
+   * host's wants. A caller that has already sanitized a complete environment
+   * passes `false`, the same as a duplex launch: handing over a filtered record
+   * while the process layer re-adds what was filtered out is not sanitization.
+   */
+  readonly extendEnv?: boolean;
 }
 
 export class ExecutionProcessError extends Schema.TaggedErrorClass<ExecutionProcessError>()(

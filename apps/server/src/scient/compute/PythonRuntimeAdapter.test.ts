@@ -10,7 +10,6 @@ import {
 } from "@scientfactory/compute";
 
 import {
-  PROBE_SCRIPT,
   buildLaunchPlan,
   buildProfile,
   checkReadiness,
@@ -20,10 +19,13 @@ import {
   parseProbeOutput,
   PYTHON_LANGUAGE_ID,
   JUPYTER_BRIDGE_TRANSPORT_KIND,
+  PROBE_SCRIPT,
 } from "./PythonRuntimeAdapter.ts";
 
 const validProbeOutput = JSON.stringify({
   executable: "/usr/bin/python3",
+  executableRealpath: "/Library/Python/3.12/bin/python3.12",
+  executableMtimeNs: "1724112000000000000",
   implementation: "CPython",
   version: "3.12.0",
   architecture: "arm64",
@@ -69,6 +71,8 @@ describe("python probe parsing", () => {
     const result = parseProbeOutput(
       JSON.stringify({
         executable: "/python",
+        executableRealpath: "/python",
+        executableMtimeNs: "1724112000000000000",
         implementation: "CPython",
         version: "3.12.0",
         architecture: null,
@@ -123,6 +127,24 @@ describe("python readiness check", () => {
     expect(readiness).toBe("missing-requirement");
     expect(missing.some((m) => m.includes("ipykernel"))).toBe(true);
   });
+
+  it("rejects malformed and minimum-version prerelease values", () => {
+    for (const version of ["8.6rc1", "8.6.dev1", "not-a-version"]) {
+      const { readiness } = checkReadiness({
+        ...parseProbeOutput(validProbeOutput),
+        packages: { ...parseProbeOutput(validProbeOutput).packages, jupyter_client: version },
+      });
+      expect(readiness).toBe("missing-requirement");
+    }
+  });
+
+  it("accepts a post release at the minimum version", () => {
+    const { readiness } = checkReadiness({
+      ...parseProbeOutput(validProbeOutput),
+      packages: { ...parseProbeOutput(validProbeOutput).packages, jupyter_client: "8.6.post1" },
+    });
+    expect(readiness).toBe("ready");
+  });
 });
 
 describe("python profile building", () => {
@@ -140,30 +162,64 @@ describe("python launch plan", () => {
     const request: ComputeLaunchRequest = {
       profile,
       cwd: "/project",
-      environment: { PYTHONUTF8: "1" },
+      environment: { HOME: "/home/user" },
     };
     const plan = buildLaunchPlan(request, "/app/bridge.py");
     expect(plan.executable).toBe("/usr/bin/python3");
     expect(plan.args).toEqual(["-I", "-u", "/app/bridge.py"]);
     expect(plan.cwd).toBe("/project");
-    expect(plan.environment).toEqual({ PYTHONUTF8: "1" });
+    expect(plan.environment.HOME).toBe("/home/user");
+  });
+
+  it("applies the environment policy so no caller can skip it", () => {
+    const request: ComputeLaunchRequest = {
+      profile,
+      cwd: "/project",
+      environment: {
+        HOME: "/home/user",
+        PYTHONPATH: "/attacker/lib",
+        ANTHROPIC_API_KEY: "secret",
+        SCIENT_INTERNAL: "secret",
+      },
+    };
+    const plan = buildLaunchPlan(request, "/app/bridge.py");
+    expect(plan.environment).toEqual({
+      HOME: "/home/user",
+      PYTHONUTF8: "1",
+      PYTHONUNBUFFERED: "1",
+    });
+  });
+
+  it("rejects a working directory that is not absolute and canonical", () => {
+    const relative: ComputeLaunchRequest = { profile, cwd: "project", environment: {} };
+    expect(() => buildLaunchPlan(relative, "/app/bridge.py")).toThrow("absolute");
+    const traversal: ComputeLaunchRequest = { profile, cwd: "/a/../b", environment: {} };
+    expect(() => buildLaunchPlan(traversal, "/app/bridge.py")).toThrow("canonical");
   });
 });
 
 describe("python fingerprint", () => {
-  it("computes a sha256 fingerprint with contributors", () => {
-    const fp = computeFingerprint(profile, {
-      jupyter_client: "8.6.1",
-      ipykernel: "6.29.0",
-      matplotlib: null,
-      numpy: "1.26.0",
-      pandas: null,
-    });
+  it("computes a bounded sha256 fingerprint with runtime provenance contributors", () => {
+    const fp = computeFingerprint(profile, parseProbeOutput(validProbeOutput));
     expect(fp.hash).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(fp.contributors).toContain("executable");
+    expect(fp.contributors).toContain("executableMtimeNs");
     expect(fp.contributors).toContain("languageVersion");
+    expect(fp.contributors).toContain("architecture");
+    expect(fp.contributors).toContain("implementation");
+    expect(fp.contributors).toContain("prefix");
     expect(fp.contributors).toContain("jupyter_client");
     expect(fp.contributors).toContain("ipykernel");
+  });
+
+  it("changes when the selected executable contents change at the same path", () => {
+    const probe = parseProbeOutput(validProbeOutput);
+    const first = computeFingerprint(profile, probe);
+    const second = computeFingerprint(profile, {
+      ...probe,
+      executableMtimeNs: "1724112000000000001",
+    });
+    expect(second.hash).not.toBe(first.hash);
   });
 });
 
@@ -213,9 +269,9 @@ describe("python candidate discovery", () => {
 });
 
 describe("python runtime adapter", () => {
-  const fakeSpawnProbe = (stdout: string) => (executable: string) => Effect.succeed(stdout);
+  const fakeSpawnProbe = (stdout: string) => (_executable: string) => Effect.succeed(stdout);
 
-  const fakeFailingProbe = (executable: string) =>
+  const fakeFailingProbe = (_executable: string) =>
     Effect.fail(new ComputeRuntimeError({ operation: "discover", message: "Probe failed." }));
 
   it.effect("discovers profiles from viable candidates", () =>
@@ -229,6 +285,34 @@ describe("python runtime adapter", () => {
       expect(profiles[0]!.languageId).toBe(PYTHON_LANGUAGE_ID);
     }),
   );
+
+  it.effect("reuses the selected probe across discovery, verification, and fingerprinting", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const adapter = makePythonRuntimeAdapter(
+        () =>
+          Effect.sync(() => {
+            calls += 1;
+            return validProbeOutput;
+          }),
+        "/app/bridge.py",
+      );
+      const profiles = yield* adapter.discover({
+        projectRoot: "/nonexistent",
+        configuredExecutable: "/usr/bin/python3",
+      });
+      const selected = profiles[0]!;
+      const afterDiscovery = calls;
+      yield* adapter.verify({ profile: selected, cwd: "/project", environment: {} });
+      yield* adapter.fingerprintEnvironment(selected);
+      expect(calls).toBe(afterDiscovery);
+    }),
+  );
+
+  it("reads package versions without importing scientific packages", () => {
+    expect(PROBE_SCRIPT).toContain("metadata.version(pkg)");
+    expect(PROBE_SCRIPT).not.toContain("__import__(pkg)");
+  });
 
   it.effect("returns a configured-but-invalid profile without replacing it", () =>
     Effect.gen(function* () {
@@ -310,6 +394,35 @@ describe("python runtime adapter", () => {
       const adapter = makePythonRuntimeAdapter(fakeSpawnProbe(validProbeOutput), "/app/bridge.py");
       const fp = yield* adapter.fingerprintEnvironment(profile);
       expect(fp.hash).toMatch(/^sha256:/);
+    }),
+  );
+
+  it.effect("fails rather than dies when a probe cannot be parsed", () =>
+    Effect.gen(function* () {
+      // A wrapper script, a stray banner, a Python that prints nothing useful.
+      // The coordinator starts a session without a fingerprint, but only if it
+      // is told in the failure channel -- a defect would take the start down.
+      const adapter = makePythonRuntimeAdapter(fakeSpawnProbe("not json at all"), "/app/bridge.py");
+      const error = yield* Effect.flip(adapter.fingerprintEnvironment(profile));
+      expect(error.operation).toBe("fingerprint");
+      expect(error.message).toContain("malformed");
+    }),
+  );
+
+  it.effect("answers a configured interpreter that cannot describe itself with itself", () =>
+    Effect.gen(function* () {
+      // The probe runs and says nothing usable, which is as unusable as a probe
+      // that would not run. Falling through to whatever else is installed would
+      // silently run the user's code on an interpreter they did not choose.
+      const adapter = makePythonRuntimeAdapter(fakeSpawnProbe("not json at all"), "/app/bridge.py");
+      const profiles = yield* adapter.discover({
+        projectRoot: "/nonexistent",
+        configuredExecutable: "/bad/python",
+      });
+      expect(profiles).toHaveLength(1);
+      expect(profiles[0]!.source).toBe("configured");
+      expect(profiles[0]!.executable).toBe("/bad/python");
+      expect(profiles[0]!.languageVersion).toBe("unknown");
     }),
   );
 

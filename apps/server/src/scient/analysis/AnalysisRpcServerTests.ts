@@ -11,12 +11,12 @@ import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
-import type { AnalysisRpcServerTestHarness } from "../../server.test.ts";
+import type { ScientRpcServerTestHarness } from "../../server.test.ts";
 
 // Registered by server.test.ts so these cases exercise the same T3 server seam.
 export const registerAnalysisRpcTests = (
   it: Vitest.MethodsNonLive<NodeServices.NodeServices>,
-  harness: AnalysisRpcServerTestHarness,
+  harness: ScientRpcServerTestHarness,
 ): void => {
   const { buildAppUnderTest, fetchEffect, getHttpServerUrl, getWsServerUrl, withWsRpcClient } =
     harness;

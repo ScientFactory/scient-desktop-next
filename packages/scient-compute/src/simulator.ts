@@ -9,8 +9,10 @@ import {
   nextComputeSessionGeneration,
   type ComputeCapability,
   type ComputeChannel,
+  type ComputeInterruptOutcome,
   type ComputeOutput,
   type ComputeRequestId,
+  type ComputeRuntimeErrorReport,
   type ComputeRuntimeIdentity,
   type ComputeSessionGeneration,
   type ComputeTransport,
@@ -20,6 +22,30 @@ import {
 import { missingComputeCapabilities } from "./capabilities.ts";
 
 /**
+ * Image bytes a scripted runtime hands over, keyed by the sequence of the
+ * `image` output they belong to.
+ *
+ * A real transport delivers bytes exactly once, next to the durable metadata
+ * that describes them, and never again. Keying by sequence says that in the
+ * script too, so a consumer that stores bytes under the wrong output cannot
+ * pass here by accident.
+ */
+export type SimulatedComputeImageBytes = ReadonlyMap<number, Uint8Array>;
+
+/**
+ * A raw runtime error a scripted execution reports before it ends.
+ *
+ * It carries the same ordering key as an output because a transport reports it
+ * in the same stream, and the language adapter that normalizes it needs to know
+ * where in that stream the failure happened.
+ */
+export interface SimulatedComputeRuntimeError {
+  readonly sequence: number;
+  readonly observedAt: string;
+  readonly report: ComputeRuntimeErrorReport;
+}
+
+/**
  * What a scripted runtime does when it is given code.
  *
  * `runs-until-interrupted` exists so a test can hold an execution open without
@@ -27,14 +53,24 @@ import { missingComputeCapabilities } from "./capabilities.ts";
  * the cases most likely to be wrong, and a simulator that always finished
  * immediately could not express them. Nothing here sleeps, so every ordering a
  * test observes is the ordering it asked for.
+ *
+ * `runtimeError` is scripted separately from `outcome` because a runtime
+ * reports the error and the end of the execution as two facts, and a consumer
+ * that assumed the second implied the first would drop the diagnostic.
  */
 export type SimulatedComputeExecution =
   | {
       readonly _tag: "completes";
       readonly outputs: ReadonlyArray<ComputeOutput>;
       readonly outcome: "succeeded" | "failed";
+      readonly imageBytes?: SimulatedComputeImageBytes;
+      readonly runtimeError?: SimulatedComputeRuntimeError;
     }
-  | { readonly _tag: "runs-until-interrupted"; readonly outputs: ReadonlyArray<ComputeOutput> }
+  | {
+      readonly _tag: "runs-until-interrupted";
+      readonly outputs: ReadonlyArray<ComputeOutput>;
+      readonly imageBytes?: SimulatedComputeImageBytes;
+    }
   | { readonly _tag: "loses-runtime"; readonly reason: string };
 
 export interface SimulatedComputeRuntime {
@@ -88,11 +124,16 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
         ) =>
           Effect.suspend(() => {
             MutableRef.set(inFlight, undefined);
-            return emit({ _tag: "completed", requestId, outcome });
+            return emit({
+              _tag: "completed",
+              requestId,
+              generation: MutableRef.get(generation),
+              outcome,
+            });
           });
-        const whenOpen = (
+        const whenOpen = <A>(
           operation: ComputeTransportError["operation"],
-          effect: Effect.Effect<void, ComputeTransportError>,
+          effect: Effect.Effect<A, ComputeTransportError>,
         ) =>
           Effect.suspend(() =>
             MutableRef.get(closed)
@@ -114,10 +155,10 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
                   ),
                 );
           });
-        const mutateCurrentGeneration = (
+        const mutateCurrentGeneration = <A>(
           operation: ComputeTransportError["operation"],
           expectedGeneration: ComputeSessionGeneration,
-          effect: Effect.Effect<void, ComputeTransportError>,
+          effect: Effect.Effect<A, ComputeTransportError>,
         ) =>
           whenOpen(
             operation,
@@ -157,31 +198,53 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
               MutableRef.set(inFlight, executeRequest.requestId);
               const scripted = plan.resolveExecution(executeRequest.code);
               if (scripted._tag === "loses-runtime") {
-                return emit({ _tag: "accepted", requestId: executeRequest.requestId }).pipe(
-                  Effect.andThen(lose(scripted.reason)),
-                );
+                return emit({
+                  _tag: "accepted",
+                  requestId: executeRequest.requestId,
+                  generation: MutableRef.get(generation),
+                }).pipe(Effect.andThen(lose(scripted.reason)));
               }
+              const imageBytes = scripted.imageBytes;
               const announce = emit({
                 _tag: "accepted",
                 requestId: executeRequest.requestId,
+                generation: MutableRef.get(generation),
               }).pipe(
                 Effect.andThen(
                   Effect.forEach(
                     scripted.outputs,
-                    (output) =>
-                      emit({
+                    (output) => {
+                      const bytes =
+                        output._tag === "image" ? imageBytes?.get(output.sequence) : undefined;
+                      return emit({
                         _tag: "output",
                         requestId: executeRequest.requestId,
+                        generation: MutableRef.get(generation),
                         output,
-                        image: null,
-                      }),
+                        image: bytes === undefined ? null : { bytes },
+                      });
+                    },
                     { discard: true },
                   ),
                 ),
               );
-              return scripted._tag === "completes"
-                ? announce.pipe(Effect.andThen(finish(executeRequest.requestId, scripted.outcome)))
-                : announce;
+              if (scripted._tag !== "completes") return announce;
+              const runtimeError = scripted.runtimeError;
+              return announce.pipe(
+                Effect.andThen(
+                  runtimeError === undefined
+                    ? Effect.void
+                    : emit({
+                        _tag: "runtime-error",
+                        sequence: runtimeError.sequence,
+                        observedAt: runtimeError.observedAt,
+                        requestId: executeRequest.requestId,
+                        generation: MutableRef.get(generation),
+                        report: runtimeError.report,
+                      }),
+                ),
+                Effect.andThen(finish(executeRequest.requestId, scripted.outcome)),
+              );
             }),
           );
 
@@ -189,11 +252,13 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
           mutateCurrentGeneration(
             "interrupt",
             interruptRequest.expectedGeneration,
-            Effect.suspend(() => {
+            Effect.suspend((): Effect.Effect<ComputeInterruptOutcome, ComputeTransportError> => {
               const activeRequestId = MutableRef.get(inFlight);
-              if (activeRequestId === undefined) return Effect.void;
+              // Nothing to signal is `terminal`, not success: the execution the
+              // caller wanted to stop had already ended.
+              if (activeRequestId === undefined) return Effect.succeed("terminal");
               return activeRequestId === interruptRequest.requestId
-                ? settleInFlight
+                ? settleInFlight.pipe(Effect.as("interrupted" as const))
                 : Effect.fail(
                     transportError(
                       "interrupt",
@@ -223,7 +288,11 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
                   Effect.sync(() => MutableRef.set(generation, restartRequest.nextGeneration)),
                 ),
                 Effect.andThen(
-                  emit({ _tag: "restarted", generation: restartRequest.nextGeneration }),
+                  emit({
+                    _tag: "restarted",
+                    generation: restartRequest.nextGeneration,
+                    runtime: plan.runtime,
+                  }),
                 ),
               );
             }),
