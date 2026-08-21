@@ -3,9 +3,11 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   DEFAULT_PYTHON_COMPUTE_SPLIT,
+  DEFAULT_PYTHON_COMPUTE_SPLIT_LAYOUT,
   MIN_PYTHON_COMPUTE_SPLIT,
   clampPythonComputeSplit,
   normalizePythonComputeSplit,
+  normalizePythonComputeSplitLayout,
   normalizePythonComputeView,
   nudgePythonComputeSplit,
   pythonComputeSplitFromPointer,
@@ -19,6 +21,10 @@ describe("python compute surface model", () => {
     expect(normalizePythonComputeSplit(null)).toBe(DEFAULT_PYTHON_COMPUTE_SPLIT);
     expect(clampPythonComputeSplit(0.01)).toBe(MIN_PYTHON_COMPUTE_SPLIT);
     expect(clampPythonComputeSplit(0.99)).toBe(1 - MIN_PYTHON_COMPUTE_SPLIT);
+    expect(normalizePythonComputeSplitLayout("stacked")).toBe("stacked");
+    expect(normalizePythonComputeSplitLayout("horizontal")).toBe("side-by-side");
+    expect(normalizePythonComputeSplitLayout("vertical")).toBe("stacked");
+    expect(normalizePythonComputeSplitLayout("invalid")).toBe(DEFAULT_PYTHON_COMPUTE_SPLIT_LAYOUT);
   });
 
   it("maps pointer and keyboard movement into accessible divider bounds", () => {
@@ -28,6 +34,9 @@ describe("python compute surface model", () => {
     );
     expect(nudgePythonComputeSplit(0.5, "ArrowLeft")).toBe(0.48);
     expect(nudgePythonComputeSplit(0.5, "ArrowRight")).toBe(0.52);
+    expect(nudgePythonComputeSplit(0.5, "ArrowUp")).toBeNull();
+    expect(nudgePythonComputeSplit(0.5, "ArrowUp", "y")).toBe(0.48);
+    expect(nudgePythonComputeSplit(0.5, "ArrowDown", "y")).toBe(0.52);
     expect(nudgePythonComputeSplit(0.5, "Home")).toBe(MIN_PYTHON_COMPUTE_SPLIT);
     expect(nudgePythonComputeSplit(0.5, "End")).toBe(1 - MIN_PYTHON_COMPUTE_SPLIT);
     expect(nudgePythonComputeSplit(0.5, "Enter")).toBeNull();

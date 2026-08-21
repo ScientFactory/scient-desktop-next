@@ -4,13 +4,18 @@ import {
   clampScientSplitFraction,
   nudgeScientSplitFraction,
   scientSplitFractionFromPointer,
+  type ScientSplitAxis,
 } from "~/scient/layout/scientSplitFraction";
 
 export const PYTHON_COMPUTE_VIEW_STORAGE_KEY = "scient.pythonComputeView";
 export const PYTHON_COMPUTE_SPLIT_STORAGE_KEY = "scient.pythonComputeSplitRatio";
+export const PYTHON_COMPUTE_SPLIT_LAYOUT_STORAGE_KEY = "scient.pythonComputeSplitLayout";
 
 export const PYTHON_COMPUTE_VIEWS = ["code", "split", "results"] as const;
 export type PythonComputeView = (typeof PYTHON_COMPUTE_VIEWS)[number];
+
+export const PYTHON_COMPUTE_SPLIT_LAYOUTS = ["side-by-side", "stacked"] as const;
+export type PythonComputeSplitLayout = (typeof PYTHON_COMPUTE_SPLIT_LAYOUTS)[number];
 
 export const PYTHON_COMPUTE_VIEW_LABELS: Readonly<Record<PythonComputeView, string>> = {
   code: "Code",
@@ -19,6 +24,7 @@ export const PYTHON_COMPUTE_VIEW_LABELS: Readonly<Record<PythonComputeView, stri
 };
 
 export const DEFAULT_PYTHON_COMPUTE_VIEW: PythonComputeView = "code";
+export const DEFAULT_PYTHON_COMPUTE_SPLIT_LAYOUT: PythonComputeSplitLayout = "side-by-side";
 export const DEFAULT_PYTHON_COMPUTE_SPLIT = 0.5;
 export const MIN_PYTHON_COMPUTE_SPLIT = 0.2;
 export const PYTHON_COMPUTE_SPLIT_KEYBOARD_STEP = 0.02;
@@ -51,6 +57,17 @@ export function normalizePythonComputeView(value: string | null | undefined): Py
   );
 }
 
+export function normalizePythonComputeSplitLayout(
+  value: string | null | undefined,
+): PythonComputeSplitLayout {
+  if (value === "horizontal") return "side-by-side";
+  if (value === "vertical") return "stacked";
+  return (
+    PYTHON_COMPUTE_SPLIT_LAYOUTS.find((candidate) => candidate === value) ??
+    DEFAULT_PYTHON_COMPUTE_SPLIT_LAYOUT
+  );
+}
+
 export function clampPythonComputeSplit(value: number): number {
   return clampScientSplitFraction(value, PYTHON_COMPUTE_SPLIT_BOUNDS);
 }
@@ -69,12 +86,17 @@ export function pythonComputeSplitFromPointer(input: {
   return scientSplitFractionFromPointer(input, PYTHON_COMPUTE_SPLIT_BOUNDS);
 }
 
-export function nudgePythonComputeSplit(current: number, key: string): number | null {
+export function nudgePythonComputeSplit(
+  current: number,
+  key: string,
+  axis: ScientSplitAxis = "x",
+): number | null {
   return nudgeScientSplitFraction(
     current,
     key,
     PYTHON_COMPUTE_SPLIT_BOUNDS,
     PYTHON_COMPUTE_SPLIT_KEYBOARD_STEP,
+    axis,
   );
 }
 
