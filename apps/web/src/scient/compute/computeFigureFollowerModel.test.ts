@@ -13,6 +13,7 @@ import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSu
 
 import {
   computeFigureRevision,
+  latestComputeFigureSession,
   latestSuccessfulFigureExecution,
   reconcileComputeFigureTarget,
 } from "./computeFigureFollowerModel";
@@ -42,11 +43,12 @@ function execution(
   id: string,
   submittedAt: string,
   status: "succeeded" | "failed" | "cancelled" | "lost" = "succeeded",
+  executionSessionId = sessionId,
 ): ComputeExecutionRecord {
   return {
     request: {
       executionId: ComputeExecutionId.make(id),
-      sessionId,
+      sessionId: executionSessionId,
       submittedAt,
       source: {
         _tag: "document",
@@ -90,6 +92,20 @@ const artifact: PreviewStaticImageSurfaceDescriptor = {
 };
 
 describe("compute figure follow reconciliation", () => {
+  it("selects the newest session independently of query arrival order", () => {
+    const newerSession = {
+      ...session,
+      sessionId: ComputeSessionId.make("session-2"),
+      createdAt: "2026-08-22T00:00:00.000Z",
+    };
+    expect(latestComputeFigureSession([newerSession, session])?.sessionId).toBe(
+      newerSession.sessionId,
+    );
+    expect(latestComputeFigureSession([session, newerSession])?.sessionId).toBe(
+      newerSession.sessionId,
+    );
+  });
+
   it("selects a deterministic latest execution when timestamps tie", () => {
     const first = execution("execution-a", "2026-08-21T00:01:00.000Z");
     const second = execution("execution-b", "2026-08-21T00:01:00.000Z");
@@ -216,5 +232,44 @@ describe("compute figure follow reconciliation", () => {
         }),
       ).toEqual({ _tag: "unchanged" });
     }
+  });
+
+  it("rehydrates from the newest session after a follower remount without rolling back", () => {
+    const newerSession = {
+      ...session,
+      sessionId: ComputeSessionId.make("session-2"),
+      createdAt: "2026-08-22T00:00:00.000Z",
+    };
+    const newerExecution = execution(
+      "new-session-execution",
+      "2026-08-22T00:01:00.000Z",
+      "succeeded",
+      newerSession.sessionId,
+    );
+    const rehydrated = reconcileComputeFigureTarget({
+      appliedRevision: null,
+      artifact,
+      cwd: "/project",
+      reference: runtimeReference,
+      candidate: { session: newerSession, execution: newerExecution, outputs: [image("n")] },
+    });
+    expect(rehydrated._tag).toBe("apply");
+    if (rehydrated._tag !== "apply") return;
+    expect(rehydrated.descriptor.resource).toMatchObject({
+      _tag: "compute-output",
+      sessionId: newerSession.sessionId,
+      executionId: newerExecution.request.executionId,
+    });
+
+    const olderExecution = execution("late-old-session", "2026-08-21T23:59:59.000Z");
+    expect(
+      reconcileComputeFigureTarget({
+        appliedRevision: rehydrated.revision,
+        artifact: rehydrated.descriptor,
+        cwd: "/project",
+        reference: runtimeReference,
+        candidate: { session, execution: olderExecution, outputs: [image("o")] },
+      }),
+    ).toEqual({ _tag: "unchanged" });
   });
 });

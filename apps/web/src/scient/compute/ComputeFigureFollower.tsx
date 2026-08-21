@@ -16,6 +16,7 @@ import { computeEnvironment } from "~/state/compute";
 import { useEnvironmentQuery } from "~/state/query";
 
 import {
+  latestComputeFigureSession,
   latestSuccessfulFigureExecution,
   reconcileComputeFigureTarget,
 } from "./computeFigureFollowerModel";
@@ -119,19 +120,14 @@ export function ComputeFigureFollower(props: {
         })
       : null,
   );
-  const allSessions = useMemo(() => {
+  const latestSession = useMemo(() => {
     const byId = new Map<string, ComputeSessionRecord>();
     for (const session of sessions.data ?? []) byId.set(session.sessionId, session);
     for (const session of events.data?.sessions.values() ?? []) {
       byId.set(session.sessionId, session);
     }
-    return [...byId.values()].toSorted(
-      (left, right) =>
-        right.createdAt.localeCompare(left.createdAt) ||
-        right.sessionId.localeCompare(left.sessionId),
-    );
+    return latestComputeFigureSession([...byId.values()]);
   }, [events.data?.sessions, sessions.data]);
-  const latestSession = allSessions[0] ?? null;
   const executions = useEnvironmentQuery(
     latestSession === null
       ? null

@@ -30,6 +30,10 @@ describe("Scient file surface seams", () => {
       new URL("../compute/ComputeOutputView.tsx", import.meta.url),
       "utf8",
     );
+    const artifactActions = NodeFS.readFileSync(
+      new URL("../artifacts/staticArtifactViewerActions.ts", import.meta.url),
+      "utf8",
+    );
 
     expect(surface).toContain("PythonFileComputeActions");
     expect(surface).toContain("PYTHON_COMPUTE_VIEWS");
@@ -45,6 +49,7 @@ describe("Scient file surface seams", () => {
     expect(results).toContain("MenuRadioGroup");
     expect(output).toContain("useAssetUrlState");
     expect(output).toContain("<img");
-    expect(output).toContain("openScientArtifact");
+    expect(output).toContain("openStaticArtifactInPanel");
+    expect(artifactActions).toContain("openScientArtifact");
   });
 });

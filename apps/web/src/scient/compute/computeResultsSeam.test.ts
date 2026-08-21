@@ -16,6 +16,10 @@ const artifactPreviewSource = NodeFS.readFileSync(
   NodePath.join(here, "../artifacts/ScientArtifactPreview.tsx"),
   "utf8",
 );
+const artifactViewerActionsSource = NodeFS.readFileSync(
+  NodePath.join(here, "../artifacts/staticArtifactViewerActions.ts"),
+  "utf8",
+);
 const pythonActionsSource = NodeFS.readFileSync(
   NodePath.join(here, "PythonFileComputeActions.tsx"),
   "utf8",
@@ -53,14 +57,19 @@ describe("compute result surface seam", () => {
     expect(panelSource).toContain("allowFigureFollowing={selectedIsCurrentResult}");
     expect(outputSource).toContain("computeFigurePresentation");
     expect(outputSource).toContain("Float figure over the workspace");
-    expect(outputSource).toContain("rightPanel.closeSurface");
-    expect(outputSource).toContain("if (floated) usePreviewMiniPlayerStore.getState().close");
-    expect(artifactPreviewSource).toContain("closeSurface");
-    expect(artifactPreviewSource).toContain("scientArtifactSurfaceId(props.artifact)");
+    expect(outputSource).toContain("toggleStaticArtifactFloating");
+    expect(outputSource).toContain("openStaticArtifactInPanel");
+    expect(artifactPreviewSource).toContain("toggleStaticArtifactFloating");
+    expect(artifactViewerActionsSource).toContain("openScientArtifact");
+    expect(artifactViewerActionsSource).toContain("openArtifact");
+    expect(artifactViewerActionsSource).toContain("closeSurface");
     expect(followerSource).toContain("updateScientArtifact");
     expect(followerSource).toContain("updateArtifact");
     expect(followerSource).not.toContain("openScientArtifact");
     expect(followerSource).not.toContain("openArtifact");
-    expect(followerSource).toContain("events.data?.stale");
+    expect(followerSource).toContain("if (events.data?.stale || latestSession === null) return;");
+    expect(followerSource).toContain(
+      "if (events.data?.stale || latestSession === null) return null;",
+    );
   });
 });

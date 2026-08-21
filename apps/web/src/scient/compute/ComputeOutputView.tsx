@@ -20,7 +20,10 @@ import { Button } from "~/components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
-import { scientArtifactSurfaceId } from "~/scient/rightPanel/surfaces";
+import {
+  openStaticArtifactInPanel,
+  toggleStaticArtifactFloating,
+} from "~/scient/artifacts/staticArtifactViewerActions";
 
 import {
   computeFigurePresentation,
@@ -49,18 +52,10 @@ function ComputeFigure(props: {
     );
   });
   const open = () => {
-    if (floated) usePreviewMiniPlayerStore.getState().close(props.threadRef);
-    useRightPanelStore.getState().openScientArtifact(props.threadRef, props.presentation.viewer);
+    openStaticArtifactInPanel(props.threadRef, props.presentation.viewer);
   };
   const toggleFloating = () => {
-    const store = usePreviewMiniPlayerStore.getState();
-    if (floated) {
-      store.close(props.threadRef);
-      return;
-    }
-    store.openArtifact(props.threadRef, props.presentation.viewer);
-    const rightPanel = useRightPanelStore.getState();
-    rightPanel.closeSurface(props.threadRef, scientArtifactSurfaceId(props.presentation.viewer));
+    toggleStaticArtifactFloating(props.threadRef, props.presentation.viewer);
   };
 
   return (

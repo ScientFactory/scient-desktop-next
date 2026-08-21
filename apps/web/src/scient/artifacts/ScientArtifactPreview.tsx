@@ -8,9 +8,9 @@ import { Button } from "~/components/ui/button";
 import { StaticAssetImageSurface } from "~/components/preview/StaticAssetImageSurface";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
-import { useRightPanelStore } from "~/rightPanelStore";
 import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
-import { scientArtifactSurfaceId } from "~/scient/rightPanel/surfaces";
+
+import { toggleStaticArtifactFloating } from "./staticArtifactViewerActions";
 
 export function ScientArtifactPreview(props: {
   readonly environmentId: EnvironmentId;
@@ -26,14 +26,7 @@ export function ScientArtifactPreview(props: {
     miniPlayer.content.artifact.surfaceId === props.artifact.surfaceId;
 
   const toggleFloating = () => {
-    if (floated) {
-      usePreviewMiniPlayerStore.getState().close(props.threadRef);
-      return;
-    }
-    usePreviewMiniPlayerStore.getState().openArtifact(props.threadRef, props.artifact);
-    useRightPanelStore
-      .getState()
-      .closeSurface(props.threadRef, scientArtifactSurfaceId(props.artifact));
+    toggleStaticArtifactFloating(props.threadRef, props.artifact);
   };
 
   return (

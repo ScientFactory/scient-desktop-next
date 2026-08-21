@@ -67,6 +67,69 @@ export function resolvePreviewMiniPlayerDefaultPosition(
   );
 }
 
+/** Move the player by one keyboard step without leaving the viewport. */
+export function keyboardNudgePreviewMiniPlayerPosition(
+  position: PreviewMiniPlayerPosition,
+  direction: "left" | "right" | "up" | "down",
+  step: number,
+  container: PreviewMiniPlayerSize,
+  player: PreviewMiniPlayerSize,
+): PreviewMiniPlayerPosition {
+  const offsets = {
+    left: { x: -step, y: 0 },
+    right: { x: step, y: 0 },
+    up: { x: 0, y: -step },
+    down: { x: 0, y: step },
+  } as const;
+  const offset = offsets[direction];
+  return clampPreviewMiniPlayerPosition(
+    { x: position.x + offset.x, y: position.y + offset.y },
+    container,
+    player,
+  );
+}
+
+/**
+ * Move the edge owned by a focused resize handle in the arrow's screen
+ * direction. A handle ignores arrows on axes it does not control.
+ */
+export function keyboardResizePreviewMiniPlayerFromHandle(
+  rect: PreviewMiniPlayerRect,
+  handleDirection: PreviewMiniPlayerResizeDirection,
+  key: "left" | "right" | "up" | "down",
+  step: number,
+  container: PreviewMiniPlayerSize,
+): PreviewMiniPlayerRect | null {
+  const horizontalEdge = handleDirection.includes("w")
+    ? "w"
+    : handleDirection.includes("e")
+      ? "e"
+      : null;
+  const verticalEdge = handleDirection.includes("n")
+    ? "n"
+    : handleDirection.includes("s")
+      ? "s"
+      : null;
+
+  if (key === "left" || key === "right") {
+    if (horizontalEdge === null) return null;
+    return resizePreviewMiniPlayerRect({
+      rect,
+      direction: horizontalEdge,
+      delta: { x: key === "left" ? -step : step, y: 0 },
+      container,
+    });
+  }
+
+  if (verticalEdge === null) return null;
+  return resizePreviewMiniPlayerRect({
+    rect,
+    direction: verticalEdge,
+    delta: { x: 0, y: key === "up" ? -step : step },
+    container,
+  });
+}
+
 /** Resize one edge or corner while keeping the opposite edges anchored. */
 export function resizePreviewMiniPlayerRect(input: {
   readonly rect: PreviewMiniPlayerRect;

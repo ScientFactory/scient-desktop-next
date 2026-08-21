@@ -42,6 +42,18 @@ export function computeFigureRevision(
   };
 }
 
+export function latestComputeFigureSession(
+  sessions: ReadonlyArray<ComputeSessionRecord>,
+): ComputeSessionRecord | null {
+  return (
+    sessions.toSorted(
+      (left, right) =>
+        right.createdAt.localeCompare(left.createdAt) ||
+        right.sessionId.localeCompare(left.sessionId),
+    )[0] ?? null
+  );
+}
+
 export function latestSuccessfulFigureExecution(
   reference: ComputeFigureReference,
   session: ComputeSessionRecord,
