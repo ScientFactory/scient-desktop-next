@@ -16,6 +16,7 @@ import {
   Link2Icon,
   PaletteIcon,
   SearchIcon,
+  SigmaIcon,
   Settings2Icon,
   XIcon,
 } from "lucide-react";
@@ -51,6 +52,7 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/keybindings": KeyboardIcon,
   "/settings/providers": BotIcon,
   "/settings/integrations": BlocksIcon,
+  "/settings/scientific-computing": SigmaIcon,
   "/settings/source-control": GitBranchIcon,
   "/settings/connections": Link2Icon,
   "/settings/archived": ArchiveIcon,

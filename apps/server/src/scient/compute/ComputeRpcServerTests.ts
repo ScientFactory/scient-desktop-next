@@ -167,6 +167,7 @@ const seedFigures = (options: {
             sessionId: sessionRecord.sessionId,
             executionId: request.executionId,
             contentHash: figure.contentHash,
+            mediaType: "image/png",
             bytes: figure.bytes,
           });
         }

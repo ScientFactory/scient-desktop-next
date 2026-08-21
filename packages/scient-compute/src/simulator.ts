@@ -20,6 +20,35 @@ import {
   type ComputeTransportOpenRequest,
 } from "./contract.ts";
 import { missingComputeCapabilities } from "./capabilities.ts";
+import { Sequence } from "./primitives.ts";
+
+const SIMULATED_OBSERVED_AT = "1970-01-01T00:00:00.000Z";
+
+function completionBoundary(
+  execution: Exclude<SimulatedComputeExecution, { _tag: "loses-runtime" }>,
+): {
+  readonly sequence: number;
+  readonly observedAt: string;
+} {
+  const candidates = [
+    ...execution.outputs.map((output) => ({
+      sequence: output.sequence,
+      observedAt: output.observedAt,
+    })),
+    ...(execution._tag === "completes" && execution.runtimeError !== undefined
+      ? [execution.runtimeError]
+      : []),
+  ];
+  const last = candidates.reduce<(typeof candidates)[number] | undefined>(
+    (current, candidate) =>
+      current === undefined || candidate.sequence > current.sequence ? candidate : current,
+    undefined,
+  );
+  return {
+    sequence: Sequence.make((last?.sequence ?? -1) + 1),
+    observedAt: last?.observedAt ?? SIMULATED_OBSERVED_AT,
+  };
+}
 
 /**
  * Image bytes a scripted runtime hands over, keyed by the sequence of the
@@ -113,6 +142,9 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
         // what shutting the channel down means.
         const events = yield* Queue.unbounded<ComputeTransportEvent, Cause.Done>();
         const inFlight = MutableRef.make<ComputeRequestId | undefined>(undefined);
+        const inFlightBoundary = MutableRef.make<
+          { readonly sequence: number; readonly observedAt: string } | undefined
+        >(undefined);
         const generation = MutableRef.make(request.generation);
         const closed = MutableRef.make(false);
 
@@ -123,9 +155,15 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
           outcome: "succeeded" | "failed" | "cancelled",
         ) =>
           Effect.suspend(() => {
+            const boundary = MutableRef.get(inFlightBoundary) ?? {
+              sequence: Sequence.make(0),
+              observedAt: SIMULATED_OBSERVED_AT,
+            };
             MutableRef.set(inFlight, undefined);
+            MutableRef.set(inFlightBoundary, undefined);
             return emit({
               _tag: "completed",
+              ...boundary,
               requestId,
               generation: MutableRef.get(generation),
               outcome,
@@ -204,6 +242,7 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
                   generation: MutableRef.get(generation),
                 }).pipe(Effect.andThen(lose(scripted.reason)));
               }
+              MutableRef.set(inFlightBoundary, completionBoundary(scripted));
               const imageBytes = scripted.imageBytes;
               const announce = emit({
                 _tag: "accepted",
@@ -268,6 +307,21 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
             }),
           );
 
+        const inspectVariables: ComputeChannel["inspectVariables"] = (variablesRequest) =>
+          mutateCurrentGeneration(
+            "variables",
+            variablesRequest.expectedGeneration,
+            plan.capabilities.includes("variables")
+              ? Effect.succeed({
+                  generation: variablesRequest.expectedGeneration,
+                  variables: [],
+                  truncated: false,
+                })
+              : Effect.fail(
+                  transportError("variables", "The runtime does not support variable inspection."),
+                ),
+          );
+
         const restart: ComputeChannel["restart"] = (restartRequest) =>
           mutateCurrentGeneration(
             "restart",
@@ -318,6 +372,7 @@ export function createSimulatedComputeTransport(plan: SimulatedComputeRuntime): 
           events: Stream.fromQueue(events),
           execute,
           interrupt,
+          inspectVariables,
           restart,
           shutdown,
         } satisfies ComputeChannel;

@@ -1,11 +1,12 @@
 import * as Schema from "effect/Schema";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import type * as Scope from "effect/Scope";
 import type * as Stream from "effect/Stream";
 
 import {
   ByteLength,
   ContentHash,
+  Count,
   EntityId,
   Label,
   ObservedAt,
@@ -128,15 +129,37 @@ export const ComputeOutputStream = Schema.Literals(["stdout", "stderr"]);
 export type ComputeOutputStream = typeof ComputeOutputStream.Type;
 
 /** A runtime error normalized out of a language-specific report. */
+export const ComputeDiagnosticFrame = Schema.Struct({
+  relativePath: ShortText,
+  line: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  column: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))),
+  functionName: Schema.NullOr(Label),
+});
+export type ComputeDiagnosticFrame = typeof ComputeDiagnosticFrame.Type;
+
 export const ComputeDiagnostic = Schema.Struct({
   errorName: Label,
   message: ShortText,
   traceback: Schema.Array(ShortText),
+  // Older retained diagnostics predate structured source navigation.
+  frames: Schema.Array(ComputeDiagnosticFrame)
+    .check(Schema.isMaxLength(64))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 export type ComputeDiagnostic = typeof ComputeDiagnostic.Type;
 
-export const ComputeImageMediaType = Schema.Literals(["image/png"]);
+export const ComputeImageMediaType = Schema.Literals(["image/png", "image/svg+xml"]);
 export type ComputeImageMediaType = typeof ComputeImageMediaType.Type;
+
+/** Why an image belongs to this execution, without coupling it to one runtime. */
+export const ComputeImageOrigin = Schema.Union([
+  Schema.TaggedStruct("runtime-display", {}),
+  Schema.TaggedStruct("project-file", {
+    path: ShortText,
+    revision: ContentHash,
+  }),
+]);
+export type ComputeImageOrigin = typeof ComputeImageOrigin.Type;
 
 /** Facts about the session itself, told in the same ordered stream as its output. */
 export const ComputeSystemEvent = Schema.Literals([
@@ -187,6 +210,8 @@ export const ComputeOutput = Schema.Union([
     byteLength: ByteLength,
     width: Schema.NullOr(Pixels),
     height: Schema.NullOr(Pixels),
+    // Optional for durable records written before image provenance existed.
+    origin: Schema.optional(ComputeImageOrigin),
   }),
   Schema.TaggedStruct("system", {
     ...OutputEnvelope,
@@ -218,6 +243,10 @@ export function computeOutputByteLength(output: ComputeOutput): number {
           output.diagnostic.errorName,
           output.diagnostic.message,
           ...output.diagnostic.traceback,
+          ...output.diagnostic.frames.flatMap((frame) => [
+            frame.relativePath,
+            frame.functionName ?? "",
+          ]),
         ].join("\n"),
       ).length;
     case "image":
@@ -243,6 +272,31 @@ export const ComputeCapability = Schema.Literals([
   "stdin",
 ]);
 export type ComputeCapability = typeof ComputeCapability.Type;
+
+/**
+ * A bounded, transient description of one value in a live runtime namespace.
+ *
+ * This is intentionally not a serialized value and is never part of durable
+ * execution history. Adapters may omit any field they cannot obtain safely;
+ * in particular they must not invoke arbitrary user-defined representations
+ * merely to make a preview look richer.
+ */
+export const ComputeVariable = Schema.Struct({
+  name: Label,
+  typeName: Label,
+  shape: Schema.NullOr(ShortText),
+  size: Schema.NullOr(Count),
+  preview: Schema.NullOr(ShortText),
+});
+export type ComputeVariable = typeof ComputeVariable.Type;
+
+/** One generation-scoped, bounded view of the current live namespace. */
+export const ComputeVariableSnapshot = Schema.Struct({
+  generation: ComputeSessionGeneration,
+  variables: Schema.Array(ComputeVariable).check(Schema.isMaxLength(200)),
+  truncated: Schema.Boolean,
+});
+export type ComputeVariableSnapshot = typeof ComputeVariableSnapshot.Type;
 
 /** Identity of what is actually running, reported once the runtime answers. */
 export const ComputeRuntimeIdentity = Schema.Struct({
@@ -315,6 +369,7 @@ export const ComputeTransportEvent = Schema.Union([
     }),
   }),
   Schema.TaggedStruct("completed", {
+    ...OutputEnvelope,
     requestId: ComputeRequestId,
     generation: ComputeSessionGeneration,
     outcome: ComputeExecutionOutcome,
@@ -339,6 +394,7 @@ export class ComputeTransportError extends Schema.TaggedErrorClass<ComputeTransp
       "interrupt",
       "restart",
       "shutdown",
+      "variables",
       "receive",
     ]),
     message: Schema.NonEmptyString.check(Schema.isMaxLength(4096)),
@@ -392,6 +448,11 @@ export interface ComputeShutdownRequest {
   readonly expectedGeneration: ComputeSessionGeneration;
 }
 
+export interface ComputeVariablesRequest {
+  readonly requestId: ComputeRequestId;
+  readonly expectedGeneration: ComputeSessionGeneration;
+}
+
 /**
  * A live conversation with one runtime.
  *
@@ -414,6 +475,9 @@ export interface ComputeChannel {
     request: ComputeInterruptRequest,
   ) => Effect.Effect<ComputeInterruptOutcome, ComputeTransportError>;
   readonly restart: (request: ComputeRestartRequest) => Effect.Effect<void, ComputeTransportError>;
+  readonly inspectVariables: (
+    request: ComputeVariablesRequest,
+  ) => Effect.Effect<ComputeVariableSnapshot, ComputeTransportError>;
   readonly shutdown: (
     request: ComputeShutdownRequest,
   ) => Effect.Effect<void, ComputeTransportError>;
@@ -478,9 +542,22 @@ export interface ComputeRuntimeErrorReport {
   readonly traceback: ReadonlyArray<string>;
 }
 
-export interface ComputeDiscoveryRequest {
+/** Server-owned source context an adapter may use to produce safe locations. */
+export interface ComputeDiagnosticContext {
   readonly projectRoot: string;
+  readonly submittedSource: {
+    readonly relativePath: string;
+    /** Zero-based first document line represented by runtime line one. */
+    readonly startLine: number;
+  } | null;
+}
+
+export interface ComputeDiscoveryRequest {
+  /** Null for environment-level discovery, where project-local candidates are excluded. */
+  readonly projectRoot: string | null;
   readonly configuredExecutable: string | null;
+  /** Explicit user refresh bypasses the adapter's short probe cache. */
+  readonly refresh?: boolean;
 }
 
 export interface ComputeLaunchRequest {
@@ -522,6 +599,7 @@ export interface ComputeLanguageAdapter {
   ) => Effect.Effect<ComputeLaunchPlan, ComputeRuntimeError>;
   readonly normalizeDiagnostic: (
     report: ComputeRuntimeErrorReport,
+    context: ComputeDiagnosticContext,
   ) => ReadonlyArray<ComputeDiagnostic>;
   readonly fingerprintEnvironment: (
     profile: ComputeRuntimeProfile,

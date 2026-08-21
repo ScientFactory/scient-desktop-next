@@ -36,6 +36,31 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("keeps compute inspection and history read-only while lifecycle changes require operate", () => {
+    for (const method of [
+      WS_METHODS.computeInspectRuntimes,
+      WS_METHODS.computeListSessions,
+      WS_METHODS.computeGetSession,
+      WS_METHODS.computeListExecutions,
+      WS_METHODS.computeListOutputs,
+      WS_METHODS.subscribeComputeSessions,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+    for (const method of [
+      WS_METHODS.computeVerifyRuntime,
+      WS_METHODS.computeStartSession,
+      WS_METHODS.computeSubmitExecution,
+      WS_METHODS.computeCancelExecution,
+      WS_METHODS.computeInterruptSession,
+      WS_METHODS.computeRestartSession,
+      WS_METHODS.computeStopSession,
+      WS_METHODS.computeInspectVariables,
+    ]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationOperateScope);
+    }
+  });
+
   it("allows relay status reads without granting relay installation access", () => {
     expect(requiredScopeForRpcMethod(WS_METHODS.cloudGetRelayClientStatus)).toBe(
       AuthRelayReadScope,

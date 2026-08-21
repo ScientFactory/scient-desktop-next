@@ -12,6 +12,7 @@ import {
   ComputeRequestId,
   ComputeSessionGeneration,
   ComputeSessionId,
+  ComputeVariable,
   ComputeProtocolError,
   type ComputeProtocolMessage,
 } from "@scientfactory/compute";
@@ -30,6 +31,9 @@ const MaxTracebackLines = 200;
 // mebibytes of base64 is an eight mebibyte figure, which leaves the 16 MiB
 // frame limit room for the envelope around it.
 const MaxPngBase64Bytes = 11 * 1024 * 1024;
+// Raw UTF-8 SVG stays below the decoded PNG ceiling and leaves ample room for
+// the JSON envelope inside the 16 MiB bridge frame.
+const MaxSvgTextBytes = 8 * 1024 * 1024;
 const MaxOwnerTokenLength = 128;
 const MaxPathLength = 4096;
 const MaxDetailLength = 4096;
@@ -59,6 +63,8 @@ export const BridgeMessageType = Schema.Literals([
   "execution-complete",
   "interrupt",
   "interrupt-result",
+  "inspect-variables",
+  "variables",
   "restart",
   "restarted",
   "shutdown",
@@ -76,6 +82,7 @@ export const SERVER_TO_BRIDGE_TYPES: ReadonlySet<BridgeMessageType> = new Set([
   "start-kernel",
   "execute",
   "interrupt",
+  "inspect-variables",
   "restart",
   "shutdown",
 ]);
@@ -90,6 +97,7 @@ export const BRIDGE_TO_SERVER_TYPES: ReadonlySet<BridgeMessageType> = new Set([
   "warning",
   "execution-complete",
   "interrupt-result",
+  "variables",
   "restarted",
   "shutdown-complete",
   "fatal",
@@ -115,6 +123,8 @@ const COMMAND_CORRELATED_TYPES: ReadonlySet<BridgeMessageType> = new Set([
   "execution-complete",
   "interrupt",
   "interrupt-result",
+  "inspect-variables",
+  "variables",
 ]);
 
 /**
@@ -200,6 +210,10 @@ export const DisplayPayload = Schema.Union([
     data: Schema.String.check(Schema.isMaxLength(MaxPngBase64Bytes)),
   }),
   Schema.Struct({
+    mediaType: Schema.Literal("image/svg+xml"),
+    data: Schema.String.check(Schema.isMaxLength(MaxSvgTextBytes), utf8Bound(MaxSvgTextBytes)),
+  }),
+  Schema.Struct({
     mediaType: Schema.Literal("text/plain"),
     text: Schema.String.check(
       Schema.isMaxLength(MaxStreamTextLength),
@@ -243,6 +257,16 @@ export const InterruptResultPayload = Schema.Struct({
   result: Schema.Literals(["interrupted", "terminal", "rejected", "timeout"]),
 });
 export type InterruptResultPayload = typeof InterruptResultPayload.Type;
+
+export const InspectVariablesPayload = Schema.Struct({});
+export type InspectVariablesPayload = typeof InspectVariablesPayload.Type;
+
+export const VariablesPayload = Schema.Struct({
+  variables: Schema.Array(ComputeVariable).check(Schema.isMaxLength(200)),
+  truncated: Schema.Boolean,
+  error: Schema.NullOr(ShortText),
+});
+export type VariablesPayload = typeof VariablesPayload.Type;
 
 export const RestartPayload = Schema.Struct({
   nextGeneration: ComputeSessionGeneration,
@@ -299,6 +323,8 @@ const PAYLOAD_DECODERS: Readonly<Record<BridgeMessageType, (input: unknown) => u
   "execution-complete": Schema.decodeUnknownSync(ExecutionCompletePayload),
   interrupt: Schema.decodeUnknownSync(InterruptPayload),
   "interrupt-result": Schema.decodeUnknownSync(InterruptResultPayload),
+  "inspect-variables": Schema.decodeUnknownSync(InspectVariablesPayload),
+  variables: Schema.decodeUnknownSync(VariablesPayload),
   restart: Schema.decodeUnknownSync(RestartPayload),
   restarted: Schema.decodeUnknownSync(RestartedPayload),
   shutdown: Schema.decodeUnknownSync(ShutdownPayload),

@@ -21,6 +21,7 @@ import {
   type ComputeTransport,
   type ComputeTransportEvent,
   type ComputeTransportOpenRequest,
+  type ComputeVariableSnapshot,
 } from "@scientfactory/compute";
 import { DuplexProcessId, type DuplexProcessPort } from "@scientfactory/execution";
 import * as Cause from "effect/Cause";
@@ -40,17 +41,18 @@ import {
   validateBridgeSequence,
   type BridgeMessage,
 } from "./BridgeProtocol.ts";
+import { inspectComputeStaticImage } from "./ComputeStaticImage.ts";
 
 const DEFAULT_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_INTERRUPT_TIMEOUT_MS = 10_000;
+const DEFAULT_VARIABLES_TIMEOUT_MS = 10_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 15_000;
 const DEFAULT_FINALIZER_SHUTDOWN_MS = 5_000;
 const DEFAULT_MAX_EVENT_QUEUE_BYTES = 32 * 1024 * 1024;
 const MAX_LOST_REASON_LENGTH = 4096;
 const MAX_STDERR_TAIL_BYTES = 64 * 1024;
 const MAX_PNG_DECODED_BYTES = 8 * 1024 * 1024;
-const PNG_SIGNATURE = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const IHDR = new Uint8Array([0x49, 0x48, 0x44, 0x52]);
+const MAX_SVG_DECODED_BYTES = 8 * 1024 * 1024;
 
 /**
  * The transport does not need to know where the bridge script lives.
@@ -137,18 +139,6 @@ function estimateEventBytes(event: ComputeTransportEvent): number {
   }
 }
 
-function validPng(bytes: Uint8Array): boolean {
-  if (bytes.byteLength < 24) return false;
-  if (!PNG_SIGNATURE.every((value, index) => bytes[index] === value)) return false;
-  if (!IHDR.every((value, index) => bytes[12 + index] === value)) return false;
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return (
-    view.getUint32(8, false) === 13 &&
-    view.getUint32(16, false) > 0 &&
-    view.getUint32(20, false) > 0
-  );
-}
-
 /**
  * The bytes behind a base64 PNG payload, or a sentence saying why there are none.
  *
@@ -169,13 +159,21 @@ function decodePngPayload(data: string): Uint8Array | string {
   if (bytes.byteLength > MAX_PNG_DECODED_BYTES) {
     return "An image output was dropped: it exceeded the decoded byte limit.";
   }
-  if (!validPng(bytes)) return "An image output was dropped: its data was not a PNG.";
+  if (inspectComputeStaticImage("image/png", bytes) === null) {
+    return "An image output was dropped: its data was not a PNG.";
+  }
   return bytes;
 }
 
-function pngDimensions(bytes: Uint8Array): { readonly width: number; readonly height: number } {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  return { width: view.getUint32(16, false), height: view.getUint32(20, false) };
+function decodeSvgPayload(data: string): Uint8Array | string {
+  const bytes = new TextEncoder().encode(data);
+  if (bytes.byteLength > MAX_SVG_DECODED_BYTES) {
+    return "An image output was dropped: it exceeded the decoded byte limit.";
+  }
+  if (inspectComputeStaticImage("image/svg+xml", bytes) === null) {
+    return "An image output was dropped: its data was not an SVG.";
+  }
+  return bytes;
 }
 
 function hasCapabilities(
@@ -237,6 +235,7 @@ export function makeJupyterBridgeTransport(
         const lost = MutableRef.make(false);
         const transitioning = MutableRef.make(false);
         const activeRequestId = MutableRef.make<ComputeRequestId | null>(null);
+        const inspectingVariables = MutableRef.make(false);
         /**
          * A shutdown this transport asked for, as opposed to one it suffered.
          *
@@ -420,6 +419,7 @@ export function makeJupyterBridgeTransport(
               "hello-ack",
               "kernel-ready",
               "interrupt-result",
+              "variables",
               "restarted",
               "shutdown-complete",
             ]);
@@ -463,6 +463,7 @@ export function makeJupyterBridgeTransport(
               case "display": {
                 const payload = message.payload as
                   | { mediaType: "image/png"; data: string }
+                  | { mediaType: "image/svg+xml"; data: string }
                   | { mediaType: "text/plain"; text: string };
                 if (payload.mediaType === "text/plain") {
                   yield* emit({
@@ -480,7 +481,10 @@ export function makeJupyterBridgeTransport(
                   });
                   break;
                 }
-                const imageBytes = decodePngPayload(payload.data);
+                const imageBytes =
+                  payload.mediaType === "image/png"
+                    ? decodePngPayload(payload.data)
+                    : decodeSvgPayload(payload.data);
                 if (typeof imageBytes === "string") {
                   yield* emit({
                     _tag: "output",
@@ -497,7 +501,10 @@ export function makeJupyterBridgeTransport(
                   });
                   break;
                 }
-                const dimensions = pngDimensions(imageBytes);
+                const dimensions =
+                  payload.mediaType === "image/png"
+                    ? inspectComputeStaticImage("image/png", imageBytes)
+                    : null;
                 const hash = NodeCrypto.createHash("sha256").update(imageBytes).digest("hex");
                 yield* emit({
                   _tag: "output",
@@ -507,11 +514,12 @@ export function makeJupyterBridgeTransport(
                     _tag: "image",
                     sequence: message.sequence,
                     observedAt: yield* timestamp,
-                    mediaType: "image/png",
+                    mediaType: payload.mediaType,
                     contentHash: `sha256:${hash}`,
                     byteLength: imageBytes.byteLength,
-                    width: dimensions.width,
-                    height: dimensions.height,
+                    width: dimensions?.width ?? null,
+                    height: dimensions?.height ?? null,
+                    origin: { _tag: "runtime-display" },
                   },
                   image: { bytes: imageBytes },
                 });
@@ -565,6 +573,8 @@ export function makeJupyterBridgeTransport(
                 };
                 yield* emit({
                   _tag: "completed",
+                  sequence: message.sequence,
+                  observedAt: yield* timestamp,
                   requestId: message.requestId!,
                   generation: message.generation,
                   outcome: payload.outcome,
@@ -911,6 +921,11 @@ export function makeJupyterBridgeTransport(
             if (MutableRef.get(activeRequestId) !== null) {
               return Effect.fail(transportError("execute", "An execution is already active."));
             }
+            if (MutableRef.get(inspectingVariables)) {
+              return Effect.fail(
+                transportError("execute", "The runtime is inspecting its current variables."),
+              );
+            }
             if (estimateTextBytes(executeRequest.code) > 1024 * 1024) {
               return Effect.fail(
                 transportError("execute", "Execution code exceeds the 1048576 byte limit."),
@@ -964,6 +979,59 @@ export function makeJupyterBridgeTransport(
                 (message) => (message.payload as { result: ComputeInterruptOutcome }).result,
               ),
             ),
+          );
+
+        const inspectVariables: ComputeChannel["inspectVariables"] = (variablesRequest) =>
+          commandGate.withPermits(1)(
+            Effect.suspend(() => {
+              if (MutableRef.get(transitioning)) {
+                return Effect.fail(
+                  transportError("variables", "The runtime is changing generation."),
+                );
+              }
+              if (MutableRef.get(activeRequestId) !== null) {
+                return Effect.fail(transportError("variables", "An execution is already active."));
+              }
+              MutableRef.set(inspectingVariables, true);
+              return ensureGeneration("variables", variablesRequest.expectedGeneration).pipe(
+                Effect.andThen(
+                  requestResponse(
+                    "variables",
+                    {
+                      type: "inspect-variables",
+                      payload: {},
+                      generation: variablesRequest.expectedGeneration,
+                      requestId: variablesRequest.requestId,
+                    },
+                    {
+                      type: "variables",
+                      generation: variablesRequest.expectedGeneration,
+                      requestId: variablesRequest.requestId,
+                    },
+                    DEFAULT_VARIABLES_TIMEOUT_MS,
+                  ),
+                ),
+                Effect.flatMap((message) => {
+                  const payload = message.payload as {
+                    variables: ComputeVariableSnapshot["variables"];
+                    truncated: boolean;
+                    error: string | null;
+                  };
+                  return payload.error === null
+                    ? Effect.succeed({
+                        generation: variablesRequest.expectedGeneration,
+                        variables: payload.variables,
+                        truncated: payload.truncated,
+                      } satisfies ComputeVariableSnapshot)
+                    : Effect.fail(transportError("variables", payload.error));
+                }),
+                Effect.ensuring(
+                  Effect.sync(() => {
+                    MutableRef.set(inspectingVariables, false);
+                  }),
+                ),
+              );
+            }),
           );
 
         const restart: ComputeChannel["restart"] = (restartRequest) =>
@@ -1096,6 +1164,7 @@ export function makeJupyterBridgeTransport(
           events: eventStream,
           execute,
           interrupt,
+          inspectVariables,
           restart,
           shutdown,
         } satisfies ComputeChannel;

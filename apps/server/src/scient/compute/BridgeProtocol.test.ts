@@ -31,6 +31,7 @@ import {
   KernelReadyPayload,
   RestartedPayload,
   StreamPayload,
+  VariablesPayload,
   WarningPayload,
   type BridgeMessage,
 } from "./BridgeProtocol.ts";
@@ -72,6 +73,7 @@ const decodeWarning = Schema.decodeUnknownSync(WarningPayload);
 const decodeKernelReady = Schema.decodeUnknownSync(KernelReadyPayload);
 const decodeInterruptResult = Schema.decodeUnknownSync(InterruptResultPayload);
 const decodeRestarted = Schema.decodeUnknownSync(RestartedPayload);
+const decodeVariables = Schema.decodeUnknownSync(VariablesPayload);
 
 describe("bridge protocol payload schemas", () => {
   it("accepts a valid hello payload", () => {
@@ -159,6 +161,23 @@ describe("bridge protocol payload schemas", () => {
     expect(payload.mediaType).toBe("image/png");
   });
 
+  it("accepts a valid SVG display payload", () => {
+    const payload = decodeDisplay({
+      mediaType: "image/svg+xml",
+      data: '<svg xmlns="http://www.w3.org/2000/svg"><circle r="2"/></svg>',
+    });
+    expect(payload.mediaType).toBe("image/svg+xml");
+  });
+
+  it("bounds SVG display payloads by UTF-8 bytes", () => {
+    expect(() =>
+      decodeDisplay({
+        mediaType: "image/svg+xml",
+        data: `<svg>${"é".repeat(4 * 1024 * 1024 + 1)}</svg>`,
+      }),
+    ).toThrow();
+  });
+
   it("accepts a valid text display payload", () => {
     const payload = decodeDisplay({
       mediaType: "text/plain",
@@ -233,6 +252,26 @@ describe("bridge protocol payload schemas", () => {
   it("accepts a valid restarted payload", () => {
     const payload = decodeRestarted({ kernelPid: 88888 });
     expect(payload.kernelPid).toBe(88888);
+  });
+
+  it("accepts bounded variable summaries and rejects oversized snapshots", () => {
+    const variable = {
+      name: "answer",
+      typeName: "int",
+      shape: null,
+      size: null,
+      preview: "42",
+    };
+    expect(
+      decodeVariables({ variables: [variable], truncated: false, error: null }).variables,
+    ).toEqual([variable]);
+    expect(() =>
+      decodeVariables({
+        variables: Array.from({ length: 201 }, () => ({ ...variable })),
+        truncated: true,
+        error: null,
+      }),
+    ).toThrow();
   });
 });
 
@@ -331,6 +370,21 @@ describe("bridge protocol message decoding", () => {
     }),
   );
 
+  it.effect("decodes correlated variable inspection in both directions", () =>
+    Effect.gen(function* () {
+      const command = yield* decodeBridgeMessage(
+        envelope("inspect-variables", {}, { requestId }),
+        "server-to-bridge",
+      );
+      const response = yield* decodeBridgeMessage(
+        envelope("variables", { variables: [], truncated: false, error: null }, { requestId }),
+        "bridge-to-server",
+      );
+      expect(command.type).toBe("inspect-variables");
+      expect(response.type).toBe("variables");
+    }),
+  );
+
   it.effect("rejects a payload that does not match its type schema", () =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(
@@ -345,8 +399,8 @@ describe("bridge protocol direction sets", () => {
   it("places every type in exactly one direction", () => {
     const allTypes = new Set([...SERVER_TO_BRIDGE_TYPES, ...BRIDGE_TO_SERVER_TYPES]);
     expect(allTypes.size).toBe(SERVER_TO_BRIDGE_TYPES.size + BRIDGE_TO_SERVER_TYPES.size);
-    expect(SERVER_TO_BRIDGE_TYPES.size).toBe(6);
-    expect(BRIDGE_TO_SERVER_TYPES.size).toBe(12);
+    expect(SERVER_TO_BRIDGE_TYPES.size).toBe(7);
+    expect(BRIDGE_TO_SERVER_TYPES.size).toBe(13);
   });
 });
 

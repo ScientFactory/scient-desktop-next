@@ -38,12 +38,16 @@ export class ComputeOperationError extends Schema.TaggedErrorClass<ComputeOperat
       "outputs",
       "resolve",
       "subscribe",
+      "inspect",
+      "verify",
+      "variables",
     ]),
     reason: Schema.Literals([
       // The session is not there, or is not in a state that can run code.
       "session-not-found",
       "session-not-running",
       "session-terminal",
+      "session-conflict",
       // The caller is talking about a namespace that has been replaced.
       "generation-stale",
       // The session is there and healthy but has nowhere to put the work.

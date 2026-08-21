@@ -99,6 +99,34 @@ describe("simulated compute transport", () => {
     ),
   );
 
+  it.effect("keeps optional variable inspection generation-scoped", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const channel = yield* openSimulated(
+          () => ({ _tag: "completes", outputs: [], outcome: "succeeded" }),
+          { capabilities: [...REQUIRED_COMPUTE_CAPABILITIES, "variables"] },
+        );
+        expect(
+          yield* channel.inspectVariables({
+            requestId,
+            expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          }),
+        ).toEqual({
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+          variables: [],
+          truncated: false,
+        });
+        const stale = yield* Effect.flip(
+          channel.inspectVariables({
+            requestId,
+            expectedGeneration: ComputeSessionGeneration.make(2),
+          }),
+        );
+        expect(stale.operation).toBe("variables");
+      }),
+    ),
+  );
+
   it.effect("runs one execution at a time", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -263,6 +291,8 @@ describe("simulated compute transport", () => {
 
         expect(yield* events.next).toEqual({
           _tag: "completed",
+          sequence: 0,
+          observedAt: "1970-01-01T00:00:00.000Z",
           requestId,
           generation: INITIAL_COMPUTE_SESSION_GENERATION,
           outcome: "cancelled",
@@ -392,6 +422,8 @@ describe("simulated compute transport", () => {
         });
         expect(yield* events.next).toEqual({
           _tag: "completed",
+          sequence: 0,
+          observedAt: "1970-01-01T00:00:00.000Z",
           requestId,
           generation: INITIAL_COMPUTE_SESSION_GENERATION,
           outcome: "succeeded",
@@ -415,6 +447,8 @@ describe("simulated compute transport", () => {
         });
         expect(yield* events.next).toEqual({
           _tag: "completed",
+          sequence: 0,
+          observedAt: "1970-01-01T00:00:00.000Z",
           requestId: nextRequestId,
           generation: INITIAL_COMPUTE_SESSION_GENERATION,
           outcome: "succeeded",
@@ -467,6 +501,8 @@ describe("simulated compute transport", () => {
         });
         expect(yield* events.next).toEqual({
           _tag: "completed",
+          sequence: 1,
+          observedAt: "2026-08-18T00:00:00.000Z",
           requestId,
           generation: INITIAL_COMPUTE_SESSION_GENERATION,
           outcome: "succeeded",

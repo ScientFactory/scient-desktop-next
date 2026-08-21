@@ -90,4 +90,11 @@ describe("searchSettings", () => {
       targetId: "appearance",
     });
   });
+
+  it("routes Scientific Computing to its dedicated settings page", () => {
+    expect(searchSettings("scientific computing")[0]).toMatchObject({
+      id: "scientific-computing",
+      to: "/settings/scientific-computing",
+    });
+  });
 });

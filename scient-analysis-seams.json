@@ -7,6 +7,7 @@
     "apps/server/src/scient/execution",
     "apps/server/src/scient/latex",
     "apps/web/src/scient/analysis",
+    "apps/web/src/scient/compute",
     "apps/web/src/scient/latex",
     "apps/web/src/scient/layout",
     "apps/web/src/scient/artifacts",
@@ -28,8 +29,12 @@
     "apps/web/src/scient/rightPanel/ScientRightPanelSurfaceIcon.tsx",
     "apps/web/src/scient/rightPanel/surfaces.ts",
     "apps/web/src/state/analysis.ts",
+    "apps/web/src/state/compute.ts",
+    "apps/web/src/routes/settings.scientific-computing.tsx",
     "packages/client-runtime/src/state/analysis.ts",
-    "packages/contracts/src/scientAnalysis.ts"
+    "packages/client-runtime/src/state/compute.ts",
+    "packages/contracts/src/scientAnalysis.ts",
+    "packages/contracts/src/scientCompute.ts"
   ],
   "analysisDiffSignals": [
     "@scientfactory/(analysis|compute|execution)",
@@ -46,7 +51,11 @@
     "miniPlayerBrowserTabId",
     "openScientArtifact",
     "ScientFileAuxiliarySurface",
+    "ResizeSeparator",
+    "useScientHorizontalSplit",
     "analysis(Start|Cancel|Verify|List|Get|Cleanup|Promote)",
+    "compute(Inspect|Verify|Start|List|Get|Submit|Cancel|Interrupt|Restart|Stop)",
+    "scientificComputing",
     "SCIENT_MATLAB",
     "MATLAB_"
   ],
@@ -78,8 +87,8 @@
     },
     {
       "path": "apps/server/src/auth/RpcAuthorization.ts",
-      "anchor": "analysisStartRun",
-      "purpose": "Authorize analysis read and operate RPC methods."
+      "anchor": "computeInspectRuntimes",
+      "purpose": "Authorize analysis and compute read and operate RPC methods."
     },
     {
       "path": "apps/server/src/cli/config.ts",
@@ -103,23 +112,43 @@
     },
     {
       "path": "apps/server/src/ws.ts",
-      "anchor": "analysisStartRun",
-      "purpose": "Mount authenticated analysis and exact-file-watch RPC handlers, and resolve compute output assets."
+      "anchor": "computeGateway",
+      "purpose": "Mount authenticated analysis, compute, and exact-file-watch RPC handlers, and resolve compute output assets."
     },
     {
       "path": "apps/web/src/components/ChatView.tsx",
-      "anchor": "ScientArtifactPreview",
-      "purpose": "Mount Scient artifact content in the inherited right-panel layout."
+      "anchor": "ComputePanel",
+      "purpose": "Mount Scient artifact and compute content in the inherited right-panel layout."
     },
     {
       "path": "apps/web/src/components/RightPanelTabs.tsx",
-      "anchor": "scientRightPanelSurfaceTitle",
-      "purpose": "Present a generic artifact tab through the inherited right-panel chrome."
+      "anchor": "onAddCompute",
+      "purpose": "Present generic Scient artifact and compute tabs through the inherited right-panel chrome."
     },
     {
       "path": "apps/web/src/components/files/FilePreviewPanel.tsx",
       "anchor": "ScientFileAuxiliarySurface",
-      "purpose": "Mount the additive analysis surface and generic freshness controls in the file viewer."
+      "purpose": "Mount additive analysis and compute actions plus generic freshness controls in the file viewer."
+    },
+    {
+      "path": "apps/web/src/components/settings/SettingsSidebarNav.tsx",
+      "anchor": "scientific-computing",
+      "purpose": "Mount Scientific Computing in inherited settings navigation."
+    },
+    {
+      "path": "apps/web/src/components/settings/settingsSearch.ts",
+      "anchor": "scientific-computing",
+      "purpose": "Register Scientific Computing in inherited settings search."
+    },
+    {
+      "path": "apps/web/src/routeTree.gen.ts",
+      "anchor": "settings/scientific-computing",
+      "purpose": "Carry the generated Scientific Computing route registration."
+    },
+    {
+      "path": "apps/web/src/routes/_chat.pull-requests.tsx",
+      "anchor": "onAddCompute",
+      "purpose": "Keep the pull-request-only inherited right panel compatible with the additive Compute launcher."
     },
     {
       "path": "apps/web/src/components/files/fileSaveCoordinator.ts",
@@ -158,8 +187,8 @@
     },
     {
       "path": "packages/client-runtime/src/rpc/client.ts",
-      "anchor": "subscribeAnalysisRuns",
-      "purpose": "Register the typed analysis subscription with the shared RPC client."
+      "anchor": "subscribeComputeSessions",
+      "purpose": "Register typed analysis and compute subscriptions with the shared RPC client."
     },
     {
       "path": "packages/client-runtime/src/state/projectCommands.ts",
@@ -173,8 +202,13 @@
     },
     {
       "path": "packages/contracts/src/index.ts",
-      "anchor": "./scientAnalysis.ts",
-      "purpose": "Export the additive Scient analysis contract from the inherited contract package."
+      "anchor": "./scientCompute.ts",
+      "purpose": "Export additive Scient analysis and compute contracts from the inherited contract package."
+    },
+    {
+      "path": "packages/contracts/src/settings.ts",
+      "anchor": "scientificComputing",
+      "purpose": "Persist language-neutral scientific-computing preferences in server settings."
     },
     {
       "path": "packages/contracts/src/project.ts",
@@ -183,8 +217,8 @@
     },
     {
       "path": "packages/contracts/src/rpc.ts",
-      "anchor": "analysisStartRun",
-      "purpose": "Register analysis methods in the shared typed RPC surface."
+      "anchor": "computeStartSession",
+      "purpose": "Register analysis and compute methods in the shared typed RPC surface."
     },
     {
       "path": "scripts/release-smoke.ts",

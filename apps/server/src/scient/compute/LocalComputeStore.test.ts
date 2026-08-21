@@ -143,6 +143,10 @@ const imageOutput = decodeOutput({
 });
 
 const IMAGE_FILE_NAME = `${PNG_HASH.slice("sha256:".length)}.png`;
+const SVG_SOURCE = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="2"/></svg>';
+const SVG_BYTES = new TextEncoder().encode(SVG_SOURCE);
+const SVG_HASH = await sha256(SVG_BYTES);
+const SVG_FILE_NAME = `${SVG_HASH.slice("sha256:".length)}.svg`;
 
 /**
  * A store over a throwaway state directory.
@@ -187,6 +191,7 @@ const seed = Effect.gen(function* () {
     sessionId: SESSION_ID,
     executionId: EXECUTION_ID,
     contentHash: PNG_HASH,
+    mediaType: "image/png",
     bytes: PNG_BYTES,
   });
 });
@@ -593,6 +598,7 @@ describe("LocalComputeStore images", () => {
               sessionId: SESSION_ID,
               executionId: EXECUTION_ID,
               contentHash: PNG_HASH,
+              mediaType: "image/png",
               bytes: PNG_BYTES,
             });
           return [yield* write(), yield* write()];
@@ -623,6 +629,7 @@ describe("LocalComputeStore images", () => {
               sessionId: SESSION_ID,
               executionId: null,
               contentHash: otherHash,
+              mediaType: "image/png",
               bytes: PNG_BYTES,
             });
           }),
@@ -650,6 +657,7 @@ describe("LocalComputeStore images", () => {
               // The file name is derived from this, so anything that is not a
               // hex digest is a way of choosing a path.
               contentHash: "sha256:../../../../etc/passwd",
+              mediaType: "image/png",
               bytes: PNG_BYTES,
             });
           }),
@@ -672,6 +680,7 @@ describe("LocalComputeStore images", () => {
               sessionId: SESSION_ID,
               executionId: null,
               contentHash: `sha256:${"0".repeat(64)}`,
+              mediaType: "image/png",
               bytes: new Uint8Array(MAXIMUM_COMPUTE_OUTPUT_IMAGE_BYTES + 1),
             });
           }),
@@ -720,6 +729,58 @@ describe("LocalComputeStore images", () => {
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
+  it.effect("stores and resolves SVG output with its truthful media extension", () =>
+    Effect.gen(function* () {
+      const { use } = yield* harness("scient-compute-store-svg-resolve-");
+      const svgOutput = decodeOutput({
+        _tag: "image",
+        sequence: 1,
+        observedAt: OBSERVED_AT,
+        mediaType: "image/svg+xml",
+        contentHash: SVG_HASH,
+        byteLength: SVG_BYTES.byteLength,
+        width: null,
+        height: null,
+      });
+
+      const resolved = yield* use(
+        Effect.gen(function* () {
+          const store = yield* LocalComputeStore;
+          yield* store.writeSession(session);
+          yield* store.writeExecutionRequest(PROJECT_ID, request);
+          yield* store.appendOutputs({
+            projectId: PROJECT_ID,
+            sessionId: SESSION_ID,
+            executionId: EXECUTION_ID,
+            outputs: [svgOutput],
+          });
+          yield* store.writeOutputImage({
+            projectId: PROJECT_ID,
+            sessionId: SESSION_ID,
+            executionId: EXECUTION_ID,
+            contentHash: SVG_HASH,
+            mediaType: "image/svg+xml",
+            bytes: SVG_BYTES,
+          });
+          return yield* store.resolveOutputImage({
+            projectId: PROJECT_ID,
+            sessionId: SESSION_ID,
+            executionId: EXECUTION_ID,
+            contentHash: SVG_HASH,
+          });
+        }),
+      );
+
+      expect(resolved).toMatchObject({
+        fileName: SVG_FILE_NAME,
+        mediaType: "image/svg+xml",
+        contentHash: SVG_HASH,
+        byteLength: SVG_BYTES.byteLength,
+      });
+      expect(resolved?.path.endsWith(`/${SVG_FILE_NAME}`)).toBe(true);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("refuses to resolve an image the transcript never mentioned", () =>
     Effect.gen(function* () {
       const { use } = yield* harness("scient-compute-store-image-unlisted-");
@@ -738,6 +799,7 @@ describe("LocalComputeStore images", () => {
             sessionId: SESSION_ID,
             executionId: EXECUTION_ID,
             contentHash: otherHash,
+            mediaType: "image/png",
             bytes: other,
           });
           return yield* store.resolveOutputImage({
@@ -1105,6 +1167,7 @@ describe("LocalComputeStore under load", () => {
                 sessionId: SESSION_ID,
                 executionId: EXECUTION_ID,
                 contentHash: image.hash,
+                mediaType: "image/png",
                 bytes: image.bytes,
               }),
             { concurrency: "unbounded", discard: true },

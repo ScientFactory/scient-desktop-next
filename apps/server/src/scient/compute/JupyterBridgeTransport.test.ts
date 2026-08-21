@@ -39,7 +39,7 @@ const KERNEL_PID = 4243;
 const sessionId = ComputeSessionId.make("transport-unit-session");
 const python = ComputeLanguageId.make("python");
 const transportKind = ComputeTransportKind.make("jupyter-bridge");
-const capabilities = ["execute", "interrupt", "restart", "shutdown"] as const;
+const capabilities = ["execute", "interrupt", "restart", "shutdown", "variables"] as const;
 
 /** What a real bridge would answer, expressed as a pure function of the command. */
 type Responder = (command: ComputeProtocolMessage) => ReadonlyArray<
@@ -110,6 +110,26 @@ const healthyResponder =
           {
             type: "interrupt-result",
             payload: { result: "interrupted" },
+            requestId: command.requestId,
+          },
+        ];
+      case "inspect-variables":
+        return [
+          {
+            type: "variables",
+            payload: {
+              variables: [
+                {
+                  name: "answer",
+                  typeName: "int",
+                  shape: null,
+                  size: null,
+                  preview: "42",
+                },
+              ],
+              truncated: false,
+              error: null,
+            },
             requestId: command.requestId,
           },
         ];
@@ -454,6 +474,57 @@ describe("jupyter bridge output mapping", () => {
     ),
   );
 
+  it.effect("hashes and carries a static SVG without inventing raster dimensions", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { bridge, reader } = yield* harness();
+        yield* reader.next;
+        const source = '<svg xmlns="http://www.w3.org/2000/svg" width="12"><circle r="2"/></svg>';
+        const bytes = new TextEncoder().encode(source);
+        yield* bridge.say({
+          type: "display",
+          payload: { mediaType: "image/svg+xml", data: source },
+          requestId: null,
+        });
+        const event = yield* reader.next;
+        if (event._tag !== "output" || event.output._tag !== "image") {
+          throw new Error("Expected an image output.");
+        }
+        expect(event.output).toMatchObject({
+          mediaType: "image/svg+xml",
+          byteLength: bytes.byteLength,
+          width: null,
+          height: null,
+        });
+        expect(event.output.contentHash.startsWith("sha256:")).toBe(true);
+        expect(event.image?.bytes).toEqual(bytes);
+      }),
+    ),
+  );
+
+  it.effect("drops a payload labelled as SVG when it has no SVG root", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { bridge, reader } = yield* harness();
+        yield* reader.next;
+        yield* bridge.say({
+          type: "display",
+          payload: { mediaType: "image/svg+xml", data: "plain text" },
+          requestId: null,
+        });
+        const dropped = yield* reader.next;
+        if (dropped._tag !== "output" || dropped.output._tag !== "system") {
+          throw new Error("Expected a system output.");
+        }
+        expect(dropped.output).toMatchObject({
+          event: "output-truncated",
+          detail: "An image output was dropped: its data was not an SVG.",
+        });
+        expect(dropped.image).toBeNull();
+      }),
+    ),
+  );
+
   it.effect("drops an image it cannot trust and keeps the session running", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -541,6 +612,77 @@ describe("jupyter bridge output mapping", () => {
 // ---------------------------------------------------------------------------
 
 describe("jupyter bridge commands", () => {
+  it.effect("returns a generation-scoped variable snapshot", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { bridge, channel, reader } = yield* harness();
+        yield* reader.next;
+        const snapshot = yield* channel.inspectVariables({
+          requestId: request("variables-1"),
+          expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+        });
+        expect(snapshot).toEqual({
+          generation: INITIAL_COMPUTE_SESSION_GENERATION,
+          variables: [
+            {
+              name: "answer",
+              typeName: "int",
+              shape: null,
+              size: null,
+              preview: "42",
+            },
+          ],
+          truncated: false,
+        });
+        expect(bridge.sent().at(-1)?.type).toBe("inspect-variables");
+      }),
+    ),
+  );
+
+  it.effect("keeps an optional inspection failure out of the event stream", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const bridge = yield* makeFakeBridge();
+        const healthy = healthyResponder(
+          (command) => (command.payload as { ownerToken: string }).ownerToken,
+        );
+        bridge.respond((command) =>
+          command.type === "inspect-variables"
+            ? [
+                {
+                  type: "variables",
+                  payload: {
+                    variables: [],
+                    truncated: false,
+                    error: "The namespace could not be inspected.",
+                  },
+                  requestId: command.requestId,
+                },
+              ]
+            : healthy(command),
+        );
+        const channel = yield* openChannel(bridge);
+        const reader = yield* makeReader(channel);
+        yield* reader.next;
+        const failure = yield* Effect.flip(
+          channel.inspectVariables({
+            requestId: request("variables-1"),
+            expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          }),
+        );
+        expect(failure.operation).toBe("variables");
+        expect(failure.message).toContain("could not be inspected");
+
+        yield* channel.execute({
+          requestId: request("run-after-inspection"),
+          expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+          code: "pass",
+        });
+        expect(bridge.sent().at(-1)?.type).toBe("execute");
+      }),
+    ),
+  );
+
   it.effect("refuses concurrent executions before they reach the bridge", () =>
     Effect.scoped(
       Effect.gen(function* () {

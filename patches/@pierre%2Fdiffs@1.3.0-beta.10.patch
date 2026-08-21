@@ -45,9 +45,17 @@ index ff78e2a..f9df318 100644
  			this.#fileInstance?.setSelectedLines(range, {
  				notify: false,
 diff --git a/dist/react/utils/useFileInstance.js b/dist/react/utils/useFileInstance.js
-index e9f62f5..af82a46 100644
+index e9f62f5..5345391 100644
 --- a/dist/react/utils/useFileInstance.js
 +++ b/dist/react/utils/useFileInstance.js
+@@ -44,3 +44,4 @@
+-			if (instanceRef.current == null) throw new Error("File: A File instance should exist when unmounting");
+-			instanceRef.current.cleanUp();
+-			instanceRef.current = null;
++			const instance = instanceRef.current;
++			if (instance == null) return;
++			instanceRef.current = null;
++			instance.cleanUp();
 @@ -91,10 +91,7 @@ function mergeFileOptions({ options, controlledSelection, contentEditable, hasCu
  	};
  	if (needsEditorOptions) merged = {
@@ -60,6 +68,30 @@ index e9f62f5..af82a46 100644
  	};
  	return merged;
  }
+diff --git a/dist/react/utils/useFileDiffInstance.js b/dist/react/utils/useFileDiffInstance.js
+index f45b7ea..d4c8608 100644
+--- a/dist/react/utils/useFileDiffInstance.js
++++ b/dist/react/utils/useFileDiffInstance.js
+@@ -44,3 +44,4 @@
+-			if (instanceRef.current == null) throw new Error("useFileDiffInstance: A FileDiff instance should exist when unmounting");
+-			instanceRef.current.cleanUp();
+-			instanceRef.current = null;
++			const instance = instanceRef.current;
++			if (instance == null) return;
++			instanceRef.current = null;
++			instance.cleanUp();
+diff --git a/dist/react/utils/useUnresolvedFileInstance.js b/dist/react/utils/useUnresolvedFileInstance.js
+index 37fc438..82008d5 100644
+--- a/dist/react/utils/useUnresolvedFileInstance.js
++++ b/dist/react/utils/useUnresolvedFileInstance.js
+@@ -53,3 +53,4 @@
+-			if (instanceRef.current == null) throw new Error("useUnresolvedFileInstance: A UnresolvedFile instance should exist when unmounting");
+-			instanceRef.current.cleanUp();
+-			instanceRef.current = null;
++			const instance = instanceRef.current;
++			if (instance == null) return;
++			instanceRef.current = null;
++			instance.cleanUp();
 diff --git a/package.json b/package.json
 index ff61c90..1e170e5 100644
 --- a/package.json

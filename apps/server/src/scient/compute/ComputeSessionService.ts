@@ -24,6 +24,7 @@ import {
   transitionComputeExecutionStatus,
   transitionComputeSessionStatus,
   type ComputeChannel,
+  type ComputeCapability,
   type ComputeDiagnostic,
   type ComputeExecutionCommandInput,
   type ComputeExecutionOutputs,
@@ -34,6 +35,7 @@ import {
   type ComputeGetSessionInput,
   type ComputeInterruptOutcome,
   type ComputeLanguageAdapter,
+  type ComputeLanguageId,
   type ComputeListExecutionsInput,
   type ComputeListOutputsInput,
   type ComputeListSessionsInput,
@@ -55,6 +57,9 @@ import {
   type ComputeSubscribeSessionsInput,
   type ComputeTransport,
   type ComputeTransportEvent,
+  type ComputeVariableSnapshot,
+  type ComputeRuntimeProfile,
+  type ComputeRuntimeVerification,
 } from "@scientfactory/compute";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Clock from "effect/Clock";
@@ -72,6 +77,11 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
 import { sanitizeComputeEnvironment, validateProjectRoot } from "./ComputeEnvironmentPolicy.ts";
+import {
+  ComputeProjectOutputObserver,
+  disabledLayer as disabledProjectOutputObserverLayer,
+  type ComputeProjectOutputObservation,
+} from "./ComputeProjectOutputObserver.ts";
 import * as LocalComputeStore from "./LocalComputeStore.ts";
 import type { ResolvedComputeOutputImage } from "./LocalComputeStore.ts";
 
@@ -116,6 +126,38 @@ const INTERRUPT_TIMEOUT_DETAIL = "The runtime did not answer an interrupt.";
 export interface ComputeRuntimeBinding {
   readonly adapter: ComputeLanguageAdapter;
   readonly transport: ComputeTransport;
+  readonly descriptor?: ComputeRuntimeDescriptor;
+}
+
+/** Data-only adapter metadata safe to expose through the shared product UI. */
+export interface ComputeRuntimeDescriptor {
+  readonly languageId: ComputeLanguageId;
+  readonly displayName: string;
+  readonly sourceExtensions: ReadonlyArray<string>;
+  readonly capabilities: ReadonlyArray<ComputeCapability>;
+}
+
+export interface ComputeRuntimeInspectionRequest {
+  readonly projectRoot: string | null;
+  readonly workingDirectory: string;
+  readonly configuredExecutables: Readonly<Record<string, string | null>>;
+  readonly enabledLanguageIds: ReadonlySet<string>;
+  readonly refresh: boolean;
+}
+
+export interface ComputeRuntimeInspectionResult {
+  readonly descriptor: ComputeRuntimeDescriptor;
+  readonly runtimes: ReadonlyArray<{
+    readonly profile: ComputeRuntimeProfile;
+    readonly verification: ComputeRuntimeVerification;
+  }>;
+}
+
+export interface ComputeRuntimeVerificationRequest {
+  readonly languageId: ComputeLanguageId;
+  readonly executable: string;
+  readonly workingDirectory: string;
+  readonly refresh: boolean;
 }
 
 /**
@@ -237,6 +279,7 @@ interface InterruptTarget {
 interface LiveComputeSession {
   readonly projectId: ComputeProjectId;
   readonly sessionId: ComputeSessionId;
+  readonly workingDirectory: string;
   readonly adapter: ComputeLanguageAdapter;
   readonly scope: Scope.Closeable;
   readonly channel: ComputeChannel;
@@ -244,14 +287,29 @@ interface LiveComputeSession {
   readonly recordRef: Ref.Ref<ComputeSessionRecord>;
   readonly queueRef: Ref.Ref<ComputeQueueState>;
   readonly pendingRef: Ref.Ref<ReadonlyMap<ComputeExecutionId, ComputeExecutionRecord>>;
+  readonly projectOutputObservationsRef: Ref.Ref<
+    ReadonlyMap<ComputeExecutionId, ComputeProjectOutputObservation>
+  >;
   readonly readyRef: Ref.Ref<Deferred.Deferred<ComputeSessionRecord, ComputeOperationError> | null>;
+  readonly capabilitiesRef: Ref.Ref<ReadonlySet<ComputeCapability>>;
   readonly journalRef: Ref.Ref<number>;
   readonly sessionOutputRef: Ref.Ref<{ readonly bytes: number; readonly truncated: boolean }>;
+  readonly startRequest: Pick<
+    ComputeStartSessionInput,
+    "languageId" | "workingDirectory" | "configuredExecutable"
+  >;
 }
 
 export class ComputeSessionService extends Context.Service<
   ComputeSessionService,
   {
+    readonly runtimeDescriptors: ReadonlyArray<ComputeRuntimeDescriptor>;
+    readonly inspectRuntimes: (
+      input: ComputeRuntimeInspectionRequest,
+    ) => Effect.Effect<ReadonlyArray<ComputeRuntimeInspectionResult>, ComputeOperationError>;
+    readonly verifyRuntime: (
+      input: ComputeRuntimeVerificationRequest,
+    ) => Effect.Effect<ComputeRuntimeVerification, ComputeOperationError>;
     readonly startSession: (
       input: ComputeStartSessionInput,
     ) => Effect.Effect<ComputeSessionRecord, ComputeOperationError>;
@@ -270,6 +328,9 @@ export class ComputeSessionService extends Context.Service<
     readonly stopSession: (
       input: ComputeSessionCommandInput,
     ) => Effect.Effect<ComputeSessionRecord, ComputeOperationError>;
+    readonly inspectVariables: (
+      input: ComputeSessionCommandInput,
+    ) => Effect.Effect<ComputeVariableSnapshot, ComputeOperationError>;
     readonly listSessions: (
       input: ComputeListSessionsInput,
     ) => Effect.Effect<ReadonlyArray<ComputeSessionRecord>, ComputeOperationError>;
@@ -318,6 +379,7 @@ const make = Effect.gen(function* () {
   const options = yield* ComputeSessionServiceConfig;
   const hostEnvironment = yield* HostProcessEnvironment;
   const store = yield* LocalComputeStore.LocalComputeStore;
+  const projectOutputObserver = yield* ComputeProjectOutputObserver;
   const serviceScope = yield* Scope.make("sequential");
   const startLock = yield* Semaphore.make(1);
   const recoveryLock = yield* Semaphore.make(1);
@@ -335,6 +397,113 @@ const make = Effect.gen(function* () {
   const nextEventSequence = Ref.getAndUpdate(eventSequenceRef, (value) => value + 1);
   const sessionKey = (projectId: ComputeProjectId, sessionId: ComputeSessionId): string =>
     `${projectId}/${sessionId}`;
+
+  const descriptorFor = (binding: ComputeRuntimeBinding): ComputeRuntimeDescriptor =>
+    binding.descriptor ?? {
+      languageId: binding.adapter.languageId,
+      displayName: binding.adapter.languageId,
+      sourceExtensions: [],
+      capabilities: [...REQUIRED_COMPUTE_CAPABILITIES],
+    };
+
+  const runtimeEnvironment = () => sanitizeComputeEnvironment(definedEnvironment(hostEnvironment));
+
+  const runtimeDirectory = (
+    operation: "inspect" | "verify",
+    workingDirectory: string,
+  ): Effect.Effect<string, ComputeOperationError> =>
+    Effect.try({
+      try: () => validateProjectRoot(workingDirectory),
+      catch: (cause) =>
+        computeError(
+          operation,
+          "runtime-unusable",
+          "Runtime inspection requires an absolute, canonical working directory.",
+          cause,
+        ),
+    });
+
+  const inspectRuntimes = (input: ComputeRuntimeInspectionRequest) =>
+    Effect.gen(function* () {
+      const workingDirectory = yield* runtimeDirectory("inspect", input.workingDirectory);
+      const projectRoot =
+        input.projectRoot === null ? null : yield* runtimeDirectory("inspect", input.projectRoot);
+      const { environment } = runtimeEnvironment();
+      return yield* Effect.forEach(bindings, (binding) =>
+        Effect.gen(function* () {
+          if (!input.enabledLanguageIds.has(binding.adapter.languageId)) {
+            return { descriptor: descriptorFor(binding), runtimes: [] };
+          }
+          const profiles = yield* binding.adapter
+            .discover({
+              projectRoot,
+              configuredExecutable: input.configuredExecutables[binding.adapter.languageId] ?? null,
+              refresh: input.refresh,
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                computeError("inspect", "runtime-unusable", cause.message, cause),
+              ),
+            );
+          const runtimes = yield* Effect.forEach(profiles, (profile) =>
+            binding.adapter.verify({ profile, cwd: workingDirectory, environment }).pipe(
+              Effect.catch((cause) =>
+                Effect.succeed({
+                  profile,
+                  readiness: "unusable" as const,
+                  missingRequirements: [],
+                  message: shortText(cause.message),
+                }),
+              ),
+              Effect.map((verification) => ({ profile, verification })),
+            ),
+          );
+          return { descriptor: descriptorFor(binding), runtimes };
+        }),
+      );
+    });
+
+  const verifyRuntime = (input: ComputeRuntimeVerificationRequest) =>
+    Effect.gen(function* () {
+      const binding = bindings.find(
+        (candidate) => candidate.adapter.languageId === input.languageId,
+      );
+      if (binding === undefined) {
+        return yield* computeError(
+          "verify",
+          "runtime-missing",
+          `No compute runtime is registered for '${input.languageId}'.`,
+        );
+      }
+      const workingDirectory = yield* runtimeDirectory("verify", input.workingDirectory);
+      const { environment } = runtimeEnvironment();
+      const profiles = yield* binding.adapter
+        .discover({
+          projectRoot: null,
+          configuredExecutable: input.executable,
+          refresh: input.refresh,
+        })
+        .pipe(
+          Effect.mapError((cause) =>
+            computeError("verify", "runtime-unusable", cause.message, cause),
+          ),
+        );
+      const profile = profiles[0];
+      if (profile === undefined) {
+        return yield* computeError(
+          "verify",
+          "runtime-missing",
+          `The configured ${input.languageId} runtime was not found.`,
+        );
+      }
+      return yield* binding.adapter
+        .verify({ profile, cwd: workingDirectory, environment })
+        .pipe(
+          Effect.mapError((cause) =>
+            computeError("verify", "runtime-unusable", cause.message, cause),
+          ),
+        );
+    });
 
   // -------------------------------------------------------------------------
   // Publishing and persistence
@@ -646,6 +815,7 @@ const make = Effect.gen(function* () {
     executionId: ComputeExecutionId | null,
     bytes: number,
     count: number,
+    imageCount: number,
     truncated: TruncatedScopes,
   ) =>
     Effect.gen(function* () {
@@ -664,6 +834,7 @@ const make = Effect.gen(function* () {
       const result: ComputeExecutionResultRecord = {
         ...existing.result,
         outputCount: existing.result.outputCount + count,
+        imageCount: existing.result.imageCount + imageCount,
         outputBytes: existing.result.outputBytes + bytes,
         truncated: existing.result.truncated || truncated.execution,
       };
@@ -732,7 +903,7 @@ const make = Effect.gen(function* () {
         yield* appendOutputs(live, executionId, [marker]);
         // A full session has also cut this execution's transcript short, so
         // both are marked. A full execution has not filled the session.
-        yield* chargeBudget("outputs", live, executionId, computeOutputByteLength(marker), 1, {
+        yield* chargeBudget("outputs", live, executionId, computeOutputByteLength(marker), 1, 0, {
           execution: true,
           session: crossed.scope === "session",
         });
@@ -761,7 +932,7 @@ const make = Effect.gen(function* () {
             budgets.execution === null ? budgets.session.ceiling : budgets.execution.ceiling;
           const marker = truncationMarker(event.output, scope, ceiling);
           yield* appendOutputs(live, executionId, [marker]);
-          yield* chargeBudget("outputs", live, executionId, computeOutputByteLength(marker), 1, {
+          yield* chargeBudget("outputs", live, executionId, computeOutputByteLength(marker), 1, 0, {
             execution: executionId !== null,
             session: executionId === null,
           });
@@ -774,17 +945,98 @@ const make = Effect.gen(function* () {
             sessionId: live.sessionId,
             executionId,
             contentHash: event.output.contentHash,
+            mediaType: event.output.mediaType,
             bytes: carried.bytes,
           })
           .pipe(Effect.mapError(persistenceError("outputs", "Unable to record an output image.")));
       }
       yield* appendOutputs(live, executionId, [event.output]);
-      yield* chargeBudget("outputs", live, executionId, size, 1, {
-        execution: false,
-        session: false,
-      });
+      yield* chargeBudget(
+        "outputs",
+        live,
+        executionId,
+        size,
+        1,
+        event.output._tag === "image" ? 1 : 0,
+        {
+          execution: false,
+          session: false,
+        },
+      );
       yield* publishOutputs(live, executionId, [event.output]);
       return true;
+    });
+
+  /**
+   * Turns supported project files changed during this execution into durable
+   * compute outputs before the execution is declared terminal.
+   *
+   * The observer is a Scient-owned port rather than a language adapter hook:
+   * Python, R, Julia, and later runtimes all write into the same authorized
+   * project workspace. A transport reports runtime messages only and never
+   * scans the user's files or tries to infer meaning from printed paths.
+   */
+  const collectProjectOutputs = (
+    live: LiveComputeSession,
+    event: Extract<ComputeTransportEvent, { readonly _tag: "completed" }>,
+  ) =>
+    Effect.gen(function* () {
+      const executionId = ComputeExecutionId.make(event.requestId);
+      const observations = yield* Ref.get(live.projectOutputObservationsRef);
+      const observation = observations.get(executionId);
+      if (observation === undefined) return;
+      yield* Ref.set(
+        live.projectOutputObservationsRef,
+        new Map([...observations].filter(([candidate]) => candidate !== executionId)),
+      );
+      const budgets = yield* readBudgets(live, executionId);
+      if (budgets === null || budgets.execution === null) return;
+      const maximumBytes = Math.max(
+        0,
+        Math.min(
+          budgets.execution.ceiling - budgets.execution.bytes,
+          budgets.session.ceiling - budgets.session.bytes,
+        ),
+      );
+      const collection = yield* projectOutputObserver.collect(observation, { maximumBytes });
+      for (const image of collection.images) {
+        yield* applyOutput(live, {
+          _tag: "output",
+          requestId: event.requestId,
+          generation: event.generation,
+          output: {
+            _tag: "image",
+            sequence: event.sequence,
+            observedAt: event.observedAt,
+            mediaType: image.mediaType,
+            contentHash: image.contentHash,
+            byteLength: image.bytes.byteLength,
+            width: image.width,
+            height: image.height,
+            origin: {
+              _tag: "project-file",
+              path: image.relativePath,
+              revision: image.contentHash,
+            },
+          },
+          image: { bytes: image.bytes },
+        });
+      }
+      for (const warning of collection.warnings) {
+        yield* applyOutput(live, {
+          _tag: "output",
+          requestId: event.requestId,
+          generation: event.generation,
+          output: {
+            _tag: "system",
+            sequence: event.sequence,
+            observedAt: event.observedAt,
+            event: "runtime-warning",
+            detail: shortText(warning),
+          },
+          image: null,
+        });
+      }
     });
 
   const recordDiagnostics = (
@@ -837,16 +1089,21 @@ const make = Effect.gen(function* () {
       const queue = yield* Ref.get(live.queueRef);
       const advanced = startNextComputeExecution(queue);
       if (advanced.started === null) return null;
-      const execution = (yield* Ref.get(live.pendingRef)).get(advanced.started);
+      const executionId = advanced.started;
+      const execution = (yield* Ref.get(live.pendingRef)).get(executionId);
       if (execution === undefined || execution.result === null) {
-        yield* Ref.set(live.queueRef, finishComputeExecution(advanced.state, advanced.started));
+        yield* Ref.set(live.queueRef, finishComputeExecution(advanced.state, executionId));
         return null;
       }
       yield* Ref.set(live.queueRef, advanced.state);
-      yield* setExecutionStatus(operation, live, advanced.started, "submitting");
+      yield* setExecutionStatus(operation, live, executionId, "submitting");
       yield* syncQueueCounters(operation, live);
+      const observation = yield* projectOutputObserver.begin(live.workingDirectory);
+      yield* Ref.update(live.projectOutputObservationsRef, (observations) =>
+        new Map(observations).set(executionId, observation),
+      );
       return {
-        executionId: advanced.started,
+        executionId,
         generation: record.generation,
         code: execution.request.code,
       } satisfies ComputeDispatch;
@@ -858,6 +1115,11 @@ const make = Effect.gen(function* () {
     message: string,
   ) =>
     Effect.gen(function* () {
+      yield* Ref.update(live.projectOutputObservationsRef, (observations) => {
+        const next = new Map(observations);
+        next.delete(executionId);
+        return next;
+      });
       yield* setExecutionStatus("submit", live, executionId, "failed", (result) => ({
         ...result,
         failureReason: shortText(message),
@@ -900,6 +1162,7 @@ const make = Effect.gen(function* () {
     Effect.gen(function* () {
       const drained = drainComputeQueue(yield* Ref.get(live.queueRef));
       yield* Ref.set(live.queueRef, drained.state);
+      yield* Ref.set(live.projectOutputObservationsRef, new Map());
       if (drained.active !== null) {
         yield* setExecutionStatus(operation, live, drained.active, activeStatus, (result) => ({
           ...result,
@@ -1045,6 +1308,7 @@ const make = Effect.gen(function* () {
             yield* Scope.close(live.scope, Exit.void);
             return false;
           }
+          yield* Ref.set(live.capabilitiesRef, new Set(event.capabilities));
           const record = yield* setSessionStatus("start", live, "ready", (current) => ({
             ...current,
             identity: event.runtime,
@@ -1070,7 +1334,19 @@ const make = Effect.gen(function* () {
           if (event.generation !== record.generation) return false;
           const executionId =
             event.requestId === null ? null : ComputeExecutionId.make(event.requestId);
-          const diagnostics = live.adapter.normalizeDiagnostic(event.report);
+          const execution =
+            executionId === null ? undefined : (yield* Ref.get(live.pendingRef)).get(executionId);
+          const source = execution?.request.source;
+          const diagnostics = live.adapter.normalizeDiagnostic(event.report, {
+            projectRoot: live.workingDirectory,
+            submittedSource:
+              source?._tag === "document"
+                ? {
+                    relativePath: source.path,
+                    startLine: source.range?.startLine ?? 0,
+                  }
+                : null,
+          });
           if (diagnostics.length === 0) return false;
           // The diagnostics land at the sequence the error happened at, so they
           // read in the transcript where the failure actually occurred. When an
@@ -1102,6 +1378,7 @@ const make = Effect.gen(function* () {
           const record = yield* Ref.get(live.recordRef);
           if (event.generation !== record.generation) return false;
           const executionId = ComputeExecutionId.make(event.requestId);
+          yield* collectProjectOutputs(live, event);
           yield* setExecutionStatus("submit", live, executionId, event.outcome);
           yield* Ref.update(live.queueRef, (queue) => finishComputeExecution(queue, executionId));
           yield* appendJournal("submit", live, "execution-finished", event.outcome, executionId);
@@ -1201,6 +1478,7 @@ const make = Effect.gen(function* () {
           .pipe(
             Effect.map((loaded) => ({
               outputCount: loaded.outputs.length,
+              imageCount: loaded.outputs.filter((output) => output._tag === "image").length,
               outputBytes: loaded.outputs.reduce(
                 (total, output) => total + computeOutputByteLength(output),
                 0,
@@ -1209,6 +1487,7 @@ const make = Effect.gen(function* () {
             })),
             Effect.orElseSucceed(() => ({
               outputCount: result?.outputCount ?? 0,
+              imageCount: result?.imageCount ?? 0,
               outputBytes: result?.outputBytes ?? 0,
               truncated: true,
             })),
@@ -1223,6 +1502,7 @@ const make = Effect.gen(function* () {
             finishedAt: observedAt,
             diagnostics: result?.diagnostics ?? [],
             outputCount: counted.outputCount,
+            imageCount: counted.imageCount,
             outputBytes: counted.outputBytes,
             truncated: (result?.truncated ?? false) || counted.truncated,
             failureReason: wasQueued
@@ -1473,6 +1753,7 @@ const make = Effect.gen(function* () {
       const live: LiveComputeSession = {
         projectId: input.projectId,
         sessionId: input.sessionId,
+        workingDirectory: projectRoot,
         adapter: binding.adapter,
         scope: sessionScope,
         channel,
@@ -1482,12 +1763,21 @@ const make = Effect.gen(function* () {
         pendingRef: yield* Ref.make<ReadonlyMap<ComputeExecutionId, ComputeExecutionRecord>>(
           new Map(),
         ),
+        projectOutputObservationsRef: yield* Ref.make<
+          ReadonlyMap<ComputeExecutionId, ComputeProjectOutputObservation>
+        >(new Map()),
         readyRef: yield* Ref.make<Deferred.Deferred<
           ComputeSessionRecord,
           ComputeOperationError
         > | null>(ready),
+        capabilitiesRef: yield* Ref.make<ReadonlySet<ComputeCapability>>(new Set()),
         journalRef: yield* Ref.make(0),
         sessionOutputRef: yield* Ref.make({ bytes: 0, truncated: false }),
+        startRequest: {
+          languageId: input.languageId,
+          workingDirectory: input.workingDirectory,
+          configuredExecutable: input.configuredExecutable,
+        },
       };
       yield* persistSession("start", record).pipe(
         Effect.tapError(() => Scope.close(sessionScope, Exit.void)),
@@ -1525,7 +1815,20 @@ const make = Effect.gen(function* () {
           // session to hand back, so it falls through to the answer below.
           if (existing !== undefined) {
             const record = yield* Ref.get(existing.recordRef);
-            if (!TERMINAL_COMPUTE_SESSION_STATUSES.has(record.status)) return record;
+            if (!TERMINAL_COMPUTE_SESSION_STATUSES.has(record.status)) {
+              if (
+                existing.startRequest.languageId !== input.languageId ||
+                existing.startRequest.workingDirectory !== input.workingDirectory ||
+                existing.startRequest.configuredExecutable !== input.configuredExecutable
+              ) {
+                return yield* computeError(
+                  "start",
+                  "session-conflict",
+                  `Compute session '${input.sessionId}' is already live with a different start request.`,
+                );
+              }
+              return record;
+            }
           }
           const stored = yield* loadStoredSession("start", input.projectId, input.sessionId);
           if (stored !== null) {
@@ -1537,6 +1840,22 @@ const make = Effect.gen(function* () {
               "session-terminal",
               `Compute session '${input.sessionId}' has already ended; start a new session rather than reusing its name.`,
             );
+          }
+          for (const candidate of (yield* Ref.get(sessionsRef)).values()) {
+            if (
+              candidate.projectId !== input.projectId ||
+              candidate.sessionId === input.sessionId
+            ) {
+              continue;
+            }
+            const record = yield* Ref.get(candidate.recordRef);
+            if (!TERMINAL_COMPUTE_SESSION_STATUSES.has(record.status)) {
+              return yield* computeError(
+                "start",
+                "session-conflict",
+                `Compute session '${record.sessionId}' is already live for this project. Stop it before starting another session.`,
+              );
+            }
           }
           return yield* openLiveSession(input);
         }),
@@ -1618,6 +1937,7 @@ const make = Effect.gen(function* () {
         finishedAt: null,
         diagnostics: [],
         outputCount: 0,
+        imageCount: 0,
         outputBytes: 0,
         truncated: false,
         failureReason: null,
@@ -1820,6 +2140,43 @@ const make = Effect.gen(function* () {
         );
       }
       return yield* Ref.get(live.recordRef);
+    });
+
+  const inspectVariables = (input: ComputeSessionCommandInput) =>
+    Effect.gen(function* () {
+      const live = yield* requireLiveSession("variables", input.projectId, input.sessionId);
+      return yield* live.mutation.withPermits(1)(
+        Effect.gen(function* () {
+          const record = yield* Ref.get(live.recordRef);
+          yield* requireCurrentGeneration("variables", live, record, input.expectedGeneration);
+          if (record.status !== "ready" || record.activity !== "idle") {
+            return yield* computeError(
+              "variables",
+              "session-not-running",
+              record.activity === "busy"
+                ? "Current variables are available after the running code finishes."
+                : `This session is ${record.status} and cannot inspect variables.`,
+            );
+          }
+          if (!(yield* Ref.get(live.capabilitiesRef)).has("variables")) {
+            return yield* computeError(
+              "variables",
+              "capability-missing",
+              `This ${live.adapter.languageId} runtime does not support variable inspection.`,
+            );
+          }
+          return yield* live.channel
+            .inspectVariables({
+              requestId: ComputeRequestId.make(NodeCrypto.randomUUID()),
+              expectedGeneration: record.generation,
+            })
+            .pipe(
+              Effect.mapError((cause) =>
+                computeError("variables", "operation-failed", cause.message, cause),
+              ),
+            );
+        }),
+      );
     });
 
   const restartSession = (input: ComputeSessionCommandInput) =>
@@ -2096,10 +2453,14 @@ const make = Effect.gen(function* () {
   );
 
   return ComputeSessionService.of({
+    runtimeDescriptors: bindings.map(descriptorFor),
+    inspectRuntimes,
+    verifyRuntime,
     startSession,
     submitExecution,
     cancelExecution,
     interruptSession,
+    inspectVariables,
     restartSession,
     stopSession,
     listSessions,
@@ -2128,10 +2489,12 @@ const make = Effect.gen(function* () {
 export const layerWithRuntimeBindings = <E, R>(
   bindings: Effect.Effect<ReadonlyArray<ComputeRuntimeBinding>, E, R>,
   options: ComputeSessionServiceOptions = DEFAULT_COMPUTE_SESSION_SERVICE_OPTIONS,
+  projectOutputObserverLayer: Layer.Layer<ComputeProjectOutputObserver> = disabledProjectOutputObserverLayer,
 ) =>
   Layer.effect(ComputeSessionService, make).pipe(
     Layer.provide(Layer.effect(ComputeRuntimeBindings, bindings)),
     Layer.provide(Layer.succeed(ComputeSessionServiceConfig, options)),
+    Layer.provide(projectOutputObserverLayer),
   );
 
 export const layerWithRuntimes = (
@@ -2139,4 +2502,6 @@ export const layerWithRuntimes = (
   options: ComputeSessionServiceOptions = DEFAULT_COMPUTE_SESSION_SERVICE_OPTIONS,
 ) => layerWithRuntimeBindings(Effect.succeed(bindings), options);
 
-export const layer = Layer.effect(ComputeSessionService, make);
+export const layer = Layer.effect(ComputeSessionService, make).pipe(
+  Layer.provide(disabledProjectOutputObserverLayer),
+);

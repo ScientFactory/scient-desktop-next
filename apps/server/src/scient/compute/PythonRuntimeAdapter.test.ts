@@ -286,6 +286,13 @@ describe("python runtime adapter", () => {
     }),
   );
 
+  it("keeps environment discovery independent from a project's .venv", () => {
+    expect(discoverCandidates(null, null, "darwin")).toEqual([
+      { executable: "python3", source: "path" },
+      { executable: "python", source: "path" },
+    ]);
+  });
+
   it.effect("reuses the selected probe across discovery, verification, and fingerprinting", () =>
     Effect.gen(function* () {
       let calls = 0;
@@ -306,6 +313,31 @@ describe("python runtime adapter", () => {
       yield* adapter.verify({ profile: selected, cwd: "/project", environment: {} });
       yield* adapter.fingerprintEnvironment(selected);
       expect(calls).toBe(afterDiscovery);
+    }),
+  );
+
+  it.effect("bypasses the short-lived probe cache on an explicit refresh", () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const adapter = makePythonRuntimeAdapter(
+        () =>
+          Effect.sync(() => {
+            calls += 1;
+            return validProbeOutput;
+          }),
+        "/app/bridge.py",
+      );
+      yield* adapter.discover({
+        projectRoot: null,
+        configuredExecutable: "/usr/bin/python3",
+      });
+      const afterFirstInspection = calls;
+      yield* adapter.discover({
+        projectRoot: null,
+        configuredExecutable: "/usr/bin/python3",
+        refresh: true,
+      });
+      expect(calls).toBeGreaterThan(afterFirstInspection);
     }),
   );
 
@@ -380,11 +412,14 @@ describe("python runtime adapter", () => {
 
   it("normalizes diagnostics through the adapter", () => {
     const adapter = makePythonRuntimeAdapter(fakeSpawnProbe(validProbeOutput), "/app/bridge.py");
-    const diagnostics = adapter.normalizeDiagnostic({
-      name: "ValueError",
-      value: "bad value",
-      traceback: ["line 1", "line 2"],
-    });
+    const diagnostics = adapter.normalizeDiagnostic(
+      {
+        name: "ValueError",
+        value: "bad value",
+        traceback: ["line 1", "line 2"],
+      },
+      { projectRoot: "/project", submittedSource: null },
+    );
     expect(diagnostics).toHaveLength(1);
     expect(diagnostics[0]!.errorName).toBe("ValueError");
   });

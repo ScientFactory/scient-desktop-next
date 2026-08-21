@@ -1,10 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { ComputeOutput, ComputeTransportEvent } from "./contract.ts";
+import { ComputeOutput, ComputeTransportEvent, ComputeVariableSnapshot } from "./contract.ts";
 
 const decodeOutput = Schema.decodeUnknownSync(ComputeOutput);
 const decodeTransportEvent = Schema.decodeUnknownSync(ComputeTransportEvent);
+const decodeVariableSnapshot = Schema.decodeUnknownSync(ComputeVariableSnapshot);
 
 describe("compute contract", () => {
   it("accepts observed timestamps only when they are ISO-8601 instants", () => {
@@ -47,6 +48,24 @@ describe("compute contract", () => {
     });
   });
 
+  it("keeps older retained diagnostics readable without structured frames", () => {
+    const output = decodeOutput({
+      _tag: "diagnostic",
+      sequence: 0,
+      observedAt: "2026-08-19T00:00:00.000Z",
+      diagnostic: {
+        errorName: "ValueError",
+        message: "bad value",
+        traceback: ['  File "<string>", line 1, in <module>'],
+      },
+    });
+
+    expect(output).toMatchObject({
+      _tag: "diagnostic",
+      diagnostic: { frames: [] },
+    });
+  });
+
   it("rejects an unknown system event", () => {
     expect(() =>
       decodeOutput({
@@ -74,6 +93,7 @@ describe("compute contract", () => {
         byteLength: 8,
         width: 1,
         height: 1,
+        origin: { _tag: "runtime-display" },
       },
       image: { bytes: pngSignature },
     });
@@ -81,6 +101,39 @@ describe("compute contract", () => {
       _tag: "output",
       image: { bytes: pngSignature },
       output: { _tag: "image", contentHash: "sha256:abc123" },
+    });
+  });
+
+  it("accepts static SVG as compute image output", () => {
+    const bytes = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>');
+    const event = decodeTransportEvent({
+      _tag: "output",
+      requestId: "request-1",
+      generation: 1,
+      output: {
+        _tag: "image",
+        sequence: 0,
+        observedAt: "2026-08-19T00:00:00.000Z",
+        mediaType: "image/svg+xml",
+        contentHash: "sha256:abc123",
+        byteLength: bytes.byteLength,
+        width: null,
+        height: null,
+        origin: {
+          _tag: "project-file",
+          path: "results/figure.svg",
+          revision: "sha256:abc123",
+        },
+      },
+      image: { bytes },
+    });
+    expect(event).toMatchObject({
+      _tag: "output",
+      output: {
+        _tag: "image",
+        mediaType: "image/svg+xml",
+        origin: { _tag: "project-file", path: "results/figure.svg" },
+      },
     });
   });
 
@@ -125,6 +178,26 @@ describe("compute contract", () => {
         requestId: null,
         generation: 1,
         report: { name: "ValueError", value: "bad input", traceback: [] },
+      }),
+    ).toThrow();
+  });
+
+  it("bounds transient variable snapshots independently of durable output", () => {
+    const variable = {
+      name: "answer",
+      typeName: "int",
+      shape: null,
+      size: null,
+      preview: "42",
+    };
+    expect(
+      decodeVariableSnapshot({ generation: 1, variables: [variable], truncated: false }),
+    ).toMatchObject({ generation: 1, variables: [variable] });
+    expect(() =>
+      decodeVariableSnapshot({
+        generation: 1,
+        variables: Array.from({ length: 201 }, () => ({ ...variable })),
+        truncated: true,
       }),
     ).toThrow();
   });

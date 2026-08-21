@@ -5,8 +5,8 @@ Owner: Yaacov
 Created: 2026-08-18
 Purpose: Defines the architecture, domain model, transport boundary, persistence semantics, and phased implementation plan for stateful interactive scientific compute sessions in Scient. Written as a companion to the accepted `scient-analysis-runtime-foundation.md`, which governs one-shot terminal execution.
 Doc type: Architecture decision record
-Implementation maturity: Phases 1-3 candidate; qualification in progress
-Product maturity: Phase 4 manual scientific workflow pending
+Implementation maturity: Phases 1-4 local candidate; backend-qualified on macOS
+Product maturity: Phase 4 workflow implemented; owner visual acceptance pending
 Release maturity: Not approved
 
 ## Planning Posture
@@ -31,16 +31,19 @@ implementation phase, operating system, packaged application, user experience,
 or release has passed its own acceptance gate. Later evidence may amend an ADR;
 "accepted" is not a claim that the design can never change.
 
-### Qualification status (2026-08-20)
+### Qualification status (2026-08-21)
 
-Phases 1-3 exist as a local implementation candidate and are under
-qualification. Focused package, server, Python-unit, real-kernel, typecheck,
-format, lint, seam, and production-build checks pass on the current macOS
-worktree. That evidence is not yet bound to a committed candidate, and the
-branch has no hosted cross-platform result. Phase 4 still owns authorization,
-compute RPC methods, client recovery/folding, editor integration, controls, and
-visual acceptance. Platform and packaged-app evidence belongs in the
-qualification ledger and must not displace the product decision in this ADR.
+Phases 1-3 are committed at the feature-branch baseline `40c04094a45c`. Phase 4
+exists as a local, uncommitted implementation candidate on top of that baseline.
+The settings, authorization, RPC gateway, client recovery/folding, project
+Compute surface, editor actions, output viewing, and workspace refresh path are
+implemented, including explicit caret-aware `# %%` cells and bounded transient
+live-variable inspection. Full affected-package and server suites, a real Python
+3.12 kernel, the end-to-end product backend, typechecks, format, lint, seam
+verification, production builds, exact bridge staging, and release smoke pass on
+this macOS worktree. Owner-led visual acceptance, hosted cross-platform evidence,
+current-main integration, and packaged-app acceptance remain separate pending
+gates; local evidence does not imply them.
 
 It coordinates with, but does not duplicate:
 
@@ -80,8 +83,9 @@ The first goal is one dependable scientific loop:
 7. Preserve an honest execution record.
 8. Never leave orphan processes or claim that lost memory survived.
 
-Everything else — rich MIME, variables, agents, additional languages, managed
-environments — builds on that loop incrementally.
+Everything else — rich variable/table inspection, rich MIME, agents,
+additional languages, and managed environments — builds on that loop
+incrementally.
 
 ### 1.1 Project-centered scientific work
 
@@ -94,12 +98,20 @@ and session that caused it.
 The first product surface keeps review connected to that source:
 
 - text, errors, figures, and later tables appear in one project compute history;
+- Python files provide **Code**, **Split**, and **Results** views, with execution
+  initiated contextually from the file and the selected run shown beside its
+  source by default;
 - a figure opens through the ordinary typed viewer rather than a Python-only
   viewer;
 - files created or changed by user code remain ordinary project files and use
   the workspace's existing read, write, conflict, refresh, and viewer lifecycle;
 - compute-owned retained output stays operational history until a deliberate
   publication makes it a durable project result.
+
+The separate project Compute surface is secondary session/history navigation,
+not the primary authoring surface. Phase 4 does not put a generic scratch-code
+composer there. A later scratch console, if justified by real workflows, must
+be an explicit product capability rather than an always-present empty editor.
 
 ### 1.2 Stateful exploration and isolated reproducibility
 
@@ -170,6 +182,90 @@ Additional language adapters register into this same page. They do not create
 parallel settings systems or require the page to gain language-specific domain
 logic.
 
+Language enablement and preferred-runtime configuration are
+server-authoritative and scoped to the selected server environment. They use the
+existing server settings lifecycle rather than browser-local storage or a
+second compute settings store. Environment-level inspection reports configured
+and PATH runtimes only; it does not claim to enumerate project-local runtimes.
+The project Compute surface adds discovery rooted in that validated project,
+including a project `.venv`, and records the exact selected runtime in the
+session. A setting change therefore affects a future session, not the identity
+or history of an existing one.
+
+The product surface stays quiet and compact. Settings are an occasional setup
+surface, not the scientist's daily workspace. In a project, Compute presents a
+thin session/action header and gives the available space to the transcript,
+diagnostics, and figures. It reuses the ordinary source editor, project tree,
+and typed preview surfaces rather than creating compute-only copies. Idle state
+is visually quiet; running, interruptible, failed, lost, and truncated states
+are explicit without turning the surface into a monitoring dashboard.
+
+The file Results view presents one selected run immediately. It prioritizes
+figures, diagnostics, and text output and does not repeat the full submitted
+code, revision hash, or other storage identifiers beside the editor. Compact
+context states whether the run used the file, a selection, or a cell, its line
+range when useful, and whether the buffer was unsaved. The exact submitted
+bytes remain in the durable execution record as provenance rather than primary
+result-page content.
+
+The embedded file Results view does not nest the selected run in a second
+execution card. A normal successful file run presents its figures and text
+directly; compact run context appears only when it carries information such as
+a selection, cell, unsaved buffer, running state, or failure. Figure cards are
+peer results within that run. The separate project Compute history may retain a
+source-labeled execution container because it spans files and supports opening
+the originating source.
+
+The selected execution remains authoritative for status, text, and diagnostics.
+Its own figures replace any earlier visual as soon as they are retained. While
+the newest execution for that file and session generation is still active, or
+if it ends failed, cancelled, or lost, Results may keep the most recent earlier
+successful figures visible so useful visual context does not flash away. That
+fallback is explicitly labelled as belonging to the earlier execution and can
+never survive a newer successful execution that produced no figures. Selecting
+an older historical execution never mixes it with figures from another run.
+
+Source freshness is compact execution context, not a banner or a hash display.
+Dirty submissions remain labelled as unsaved. A saved submission is labelled
+`Source changed` only when the currently open file has unsaved edits or its
+saved revision no longer matches the execution's recorded revision. The exact
+submitted bytes and hashes remain durable provenance rather than result-page
+decoration.
+
+Runtime diagnostics retain their bounded raw traceback and may also carry
+bounded structured frames. Frame extraction happens at the language-adapter
+boundary with the server-derived project root and submitted-source context;
+only paths resolved inside that authorized project become relative, clickable
+source locations. The client renders those locations but never parses arbitrary
+traceback text into filesystem authority.
+
+The file editor has one contextual primary run action. Exact selected text wins;
+otherwise the caret selects the surrounding explicit `# %%` cell; without an
+explicit cell, the whole current buffer runs. Marker lines are delimiters and
+are never submitted. A caret inside a cell gives its submitted body a quiet,
+theme-aware active tint, a slightly stronger gutter indication, and a
+gutter run action. A non-collapsed text selection suppresses that active-cell
+treatment because the selection is then the execution target. Pointer hover
+never changes the active cell, and cell navigation must not replace normal
+caret placement, text selection, or editing. Cmd/Ctrl+Enter resolves through
+the same target rule so the toolbar, gutter, keyboard, and highlight cannot
+disagree.
+
+When the live adapter negotiates the optional `variables` capability, Results
+may expose a secondary **Variables** view of the current namespace. It is a
+bounded, generation-scoped summary (name, type, shape/size, and a safe preview
+when available), not a value serializer or a historical artifact. It refreshes
+after terminal executions, including failures, clears on restart, and is never
+shown as belonging to an older session. Adapters must not invoke arbitrary
+user-defined representations or properties to enrich it; unsupported values
+remain named and typed with no preview.
+
+Durable execution records remain authoritative, while bounded live events make
+the selected result responsive. A cached durable read must not hide newer live
+output: the client reconciles both by output sequence and rereads durable state
+after a detected stream gap. This is state reconciliation, not polling or a
+second history store.
+
 ### 1.4 Source and execution authority
 
 Saved project files are authoritative for durable project source. The exact
@@ -196,6 +292,10 @@ unless an explicit sharing grant exists. The ordinary project compute surface
 shows who initiated an execution and lets an authorized user inspect, interrupt,
 restart, or stop it. No separate agent-only result store or review dashboard is
 introduced.
+
+A thread may hold navigation state for an open Compute panel, but it does not
+own or partition the project session. Opening the same project's Compute surface
+from two threads reads the same authorized project history.
 
 ---
 
@@ -238,12 +338,14 @@ is a sibling specialization, not a mode inside `AnalysisRun`.
 - An adapter-driven Scientific Computing settings page, initially exposing
   Python enablement, runtime discovery/configuration, readiness, and defaults.
 - Explicit Python executable selection and verification.
-- One default stateful session per project.
-- Run selection, cell, file, or console code.
+- One live stateful session per project, with durable prior session lifetimes.
+- Run selection, cell, or file code from the ordinary Python editor.
 - Persistent variables between executions.
+- Bounded transient inspection of the current live namespace.
 - Standard output and standard error.
 - Structured Python tracebacks.
-- Matplotlib/seaborn PNG figures.
+- Static PNG/SVG figures from Matplotlib, seaborn, explicit display values, and
+  supported project images created or changed by the execution.
 - FIFO execution ordering.
 - Cancel queued execution.
 - Interrupt active execution.
@@ -258,7 +360,7 @@ is a sibling specialization, not a mode inside `AnalysisRun`.
 
 - Managed Python installation.
 - Agent execution (requires operation envelope).
-- Variable explorer.
+- Rich variable drill-down, editing, array slicing, and table browsing.
 - Plotly or Vega-Lite kernel output.
 - Arbitrary HTML.
 - Notebook editing.
@@ -273,6 +375,13 @@ The underlying identifiers, session lifecycle, persistence, and output model
 support these additions without a domain redesign. A real second-language
 adapter may still justify a typed transport-specific launch extension; the fake
 language-boundary test does not pre-approve that detail.
+
+For the initial Python adapter, **Run cell** recognizes the bounded `# %%`
+source convention and excludes the marker from submitted code. Cell parsing is
+a Python source-adapter behavior, not a universal session or settings rule;
+future languages supply their own source semantics without changing the shared
+compute domain. Files without explicit markers remain ordinary files and do not
+gain implicit notebook cells.
 
 ---
 
@@ -299,8 +408,11 @@ It records:
 - Process identity (bridge PID, kernel PID).
 - Creation and last-activity timestamps.
 
-The first UI exposes one default session per project. The model uses a real
-session ID so additional sessions can be added later without migration.
+The first UI exposes at most one live session per project. Every new lifetime
+gets a fresh real session ID; stopped, failed, and lost lifetimes remain durable
+and inspectable. This avoids overwriting a transcript while keeping the initial
+choice surface simpler than a multi-session UI. Additional simultaneous
+sessions can be added later without migration.
 
 ### 4.2 Session generation
 
@@ -777,7 +889,10 @@ interface ComputeLanguageAdapter {
 }
 ```
 
-Later variable inspection belongs here as a capability.
+Variable inspection is an optional channel capability whose safe summary is
+language-specific. The adapter advertises support; the coordinator enforces
+generation, idle-state, and authorization policy without learning Python
+namespace semantics.
 
 The coordinator, not the language adapter, constructs `TransportOpenRequest`.
 This keeps session identity, generation, transport selection, and required
@@ -858,7 +973,7 @@ The first product slice supports:
 type ComputeOutput =
   | StreamOutput // stdout/stderr text
   | DiagnosticOutput // exception type, message, traceback frames
-  | ImageOutput // PNG figure with content hash and signed resource
+  | ImageOutput // static PNG/SVG figure with content hash and signed resource
   | SystemOutput; // session started, interrupted, restarted, lost, truncated
 ```
 
@@ -915,7 +1030,7 @@ timeout model.
 ### 11.1 Avoid premature shared-package migration
 
 Do not create `@scientfactory/artifacts` before the first compute slice.
-Instead, define a compute-owned representation contract for PNG output:
+Instead, define a compute-owned representation contract for static PNG and SVG output:
 content hash, byte length, file name, producer execution, and signed-resource
 identity.
 
@@ -991,12 +1106,19 @@ It owns:
 
 ### 12.2 Initial session policy
 
-The UI exposes one default Python session for each project. Internally:
+The UI exposes at most one live Python session for each project. Internally:
 
-- The session has a real ID.
-- APIs accept session IDs.
-- Storage is session-scoped.
-- Nothing assumes the project can never have another session.
+- The client mints one bounded, path-safe session ID for a start attempt so a
+  retry is idempotent without reusing a completed history.
+- Reusing that live ID is idempotent only when language, working directory, and
+  configured runtime match the original start request; an incompatible retry is
+  a typed conflict and cannot return or replace the existing runtime.
+- A new start after stop, loss, or failure uses a fresh session ID.
+- APIs accept session IDs and storage is session-scoped.
+- Historical session lifetimes remain selectable and readable.
+- The session service atomically rejects a second distinct live session for the
+  same project; the domain and persistence do not assume the project can never
+  have another session in a later multi-session product.
 
 ### 12.3 Queue
 
@@ -1073,7 +1195,7 @@ stateDir/compute/
 - Ordered lifecycle events.
 - Text output.
 - Diagnostics.
-- PNG metadata and content hash.
+- Static-image media type, metadata, and content hash.
 - Terminal execution state.
 - Explicit truncation markers.
 
@@ -1084,7 +1206,7 @@ stateDir/compute/
 - Environment-variable contents.
 - Credentials.
 - Claims that a kernel can be resumed after process loss.
-- Hidden variable-inspection code (added later).
+- Hidden variable-inspection code.
 
 ### 13.4 Recovery
 
@@ -1122,27 +1244,34 @@ rebuildable projection, not canonical truth.
 Runtime:
 
 - `compute.inspectRuntimes`
-- `compute.configureRuntime`
 - `compute.verifyRuntime`
 
 Session:
 
-- `compute.openSession`
+- `compute.startSession`
+- `compute.listSessions`
 - `compute.getSession`
 - `compute.restartSession`
-- `compute.shutdownSession`
+- `compute.stopSession`
 
 Execution:
 
-- `compute.execute`
-- `compute.cancelQueuedExecution`
-- `compute.interruptExecution`
+- `compute.submitExecution`
+- `compute.cancelExecution`
+- `compute.interruptSession`
 - `compute.listExecutions`
-- `compute.getExecution`
+- `compute.listOutputs`
 
 Subscription:
 
-- `compute.subscribeSession`
+- `compute.subscribeSessions`
+
+The public RPC boundary accepts a project working directory and resolves the
+initialized project identity on the server. Clients do not choose authoritative
+project identifiers, working directories, retained-compute paths, or session
+ownership. Language preferences are written through the existing authenticated
+server-settings RPC; there is no separate `compute.configureRuntime` persistence
+path.
 
 ### 14.2 Authorization
 
@@ -1156,6 +1285,7 @@ Read scope (`AuthOrchestrationReadScope`):
 
 Operate scope (`AuthOrchestrationOperateScope`):
 
+- Explicit runtime verification.
 - Start session.
 - Execute code.
 - Interrupt.
@@ -1207,9 +1337,10 @@ Provide:
 - Verification status and actionable errors.
 - Session status (lifecycle + activity).
 - Run button.
-- Interrupt button while busy.
-- Restart action with namespace-loss confirmation.
-- Stop action.
+- A visible, labeled Interrupt button only while code is running; it keeps the
+  session namespace.
+- Quiet session actions while idle: restart and stop live in one labeled menu,
+  and each confirms its namespace-loss consequence before proceeding.
 - Execution transcript.
 - stdout/stderr rendering.
 - Structured traceback rendering.
@@ -1239,7 +1370,17 @@ The Phase 4 acceptance flow must verify that those changes use the ordinary
 workspace lifecycle: clean open files refresh, dirty buffers require an
 explicit conflict decision, newly created files become discoverable, and
 existing editors/viewers open the result. Compute does not infer artifacts by
-diffing the whole project tree.
+parsing console text or classifying an unbounded project diff. The shared
+compute coordinator owns a language-neutral, execution-scoped project-output
+observer. Immediately before dispatch it records a bounded inventory of the
+static image types the product can render; at the transport's terminal boundary
+it retains only new or changed regular PNG/SVG files below the validated project
+root. The observer excludes operational and dependency directories, never
+follows symlinks, reports incomplete observation, and snapshots accepted bytes
+through the same output limits, persistence, provenance, and signed viewer path
+as explicit runtime display. Language adapters and transports remain responsible
+only for runtimes and runtime messages, so a second language reuses this behavior
+without implementing another filesystem scanner.
 
 ### 15.4 Client surfaces
 
@@ -1310,7 +1451,11 @@ Treat these as initial engineering limits, not permanent product guarantees:
 | Retained output per execution  |                       8 MiB |
 | Retained output per session    |                      32 MiB |
 | PNG decoded representation     |                       8 MiB |
+| SVG UTF-8 representation       |                       8 MiB |
 | Store image defense-in-depth   |                      32 MiB |
+| Project-output inventory       |               4,096 entries |
+| Project-output directory depth |                    8 levels |
+| Project images per execution   |                          32 |
 | In-memory recent transcript    | Bounded by events and bytes |
 | Bridge shutdown stage          |                   5 seconds |
 | Transport shutdown round trip  |                  15 seconds |
@@ -1671,7 +1816,7 @@ fail the channel. Protocol v1 contains:
 | server → bridge | `execute`            | Submit code with stdin disabled and silent/store-history policy explicit.                        |
 | bridge → server | `accepted`           | Confirm that an execute passed bridge validation.                                                |
 | bridge → server | `stream`             | Emit bounded stdout/stderr text for an execution or session.                                     |
-| bridge → server | `display`            | Emit one selected PNG or bounded text fallback.                                                  |
+| bridge → server | `display`            | Emit one selected static PNG/SVG image or bounded text fallback.                                 |
 | bridge → server | `error`              | Emit the raw bounded Python error report.                                                        |
 | bridge → server | `warning`            | Emit a bounded nonfatal runtime warning or output-truncation notice.                             |
 | bridge → server | `execution-complete` | Report the execute request outcome after reply-plus-idle correlation.                            |
@@ -1719,6 +1864,10 @@ Rules:
 - PNG bytes are base64 only on the bridge wire. The server checks encoded
   length before decoding, decodes once, verifies PNG signature and byte limit,
   computes SHA-256 itself, and emits transient bytes plus trusted metadata.
+- SVG is bounded raw UTF-8 on the bridge wire. The server verifies an SVG
+  document root, computes SHA-256 itself, persists it with an `.svg` identity,
+  and serves it only through the existing sandboxed static-image asset path.
+  Scient never treats a printed filesystem path as a display result.
 - Diagnostic stderr is not protocol. Node drains it concurrently from spawn,
   retains only a bounded tail for failure context, redacts the owner token if
   encountered, and never forwards arbitrary stderr as user output.
@@ -1726,7 +1875,7 @@ Rules:
   process exit. Partial data is truncation even if the process exit code is
   zero.
 
-Keep golden JSON fixtures intentionally small. Generated PNG bytes belong in
+Keep golden JSON fixtures intentionally small. Generated image bytes belong in
 test helpers, not large checked-in blobs.
 
 ##### 2.5 Handshake and startup state machine
@@ -1914,6 +2063,10 @@ Map Jupyter messages as follows:
 - `input_request` → immediately answer EOF/unsupported according to
   `jupyter_client` API and emit `input-unsupported`; never wait for a client.
 
+Phase 4 extends the closed display mapping to validated `image/svg+xml` after
+PNG and before the text fallback. HTML, JavaScript, widgets, comms, and mutable
+display updates remain unsupported.
+
 Execution outcome is `failed` when `execute_reply.status == "error"` or a
 matching error is observed, `cancelled` when the active request reaches idle
 after an acknowledged interrupt/`KeyboardInterrupt`, and `succeeded`
@@ -1999,6 +2152,7 @@ Phase 2 enforces limits before Phase 3 retention:
 | Error name                    |     256 bytes |
 | Error value                   |        16 KiB |
 | PNG decoded bytes             |         8 MiB |
+| SVG UTF-8 bytes               |         8 MiB |
 | Bridge stderr retained tail   |        64 KiB |
 | Transport event queue         |    256 events |
 | Transport event queue payload |        32 MiB |
@@ -2011,9 +2165,10 @@ accounts for encoded frame bytes on the bridge and decoded event payload bytes
 in Node; count and byte capacity must both be available. Oversized text is
 truncated on Unicode boundaries with an explicit `output-truncated` event. An
 oversized image is dropped with the same event and bounded detail; it is never
-partially decoded. Node, not Python, computes the trusted image hash and
-optionally reads PNG dimensions with a bounded, dependency-free header parser.
-Width/height remain null when not safely available.
+partially decoded. Node, not Python, computes the trusted image hash. It
+optionally reads PNG dimensions with a bounded, dependency-free header parser;
+SVG dimensions remain null rather than trusting or evaluating arbitrary
+document attributes.
 
 Python traceback normalization strips ANSI/control sequences, bounds every
 field, preserves the human-readable traceback, and extracts no filesystem
@@ -2026,7 +2181,7 @@ All mandatory unit tests run without Python:
 
 - envelope payload schemas for every message type and direction;
 - wrong version/session/generation/token/type/request/sequence;
-- golden Jupyter-to-Scient fixtures for stream, result, PNG, error, busy/idle,
+- golden Jupyter-to-Scient fixtures for stream, result, PNG, SVG, error, busy/idle,
   parentless output, input request, and ignored MIME;
 - shell-reply-before-idle and idle-before-shell-reply;
 - duplicate/late/unknown parent messages and mapping expiry;
@@ -2055,7 +2210,7 @@ When enabled, it proves:
 2. `1 + 1`;
 3. `x = 41`, then `x + 1`;
 4. stdout, stderr, exception, and traceback;
-5. one Matplotlib PNG with verified signature/hash;
+5. one Matplotlib PNG and one explicit SVG display with verified content/hash;
 6. interrupt of an infinite loop with prior namespace intact;
 7. restart with old namespace absent and a different live kernel PID;
 8. bridge crash and kernel crash produce loss;
@@ -2133,7 +2288,7 @@ project.
   and direct loss on failed liveness.
 - Implement `LocalComputeStore.ts` (session.json, journal.ndjson, execution
   records, output.ndjson, outputs/).
-- Persist requests, results, output, and PNG files.
+- Persist requests, results, output, and static PNG/SVG files.
 - Recover interrupted sessions as `lost` on next boot.
 - Add `compute-output` asset resource and `AssetAccess` resolution.
 - Add a metadata-preserving cleanup primitive and retention accounting. Defer
@@ -2174,8 +2329,24 @@ historical truth or leaving a false "running" state.
   and supported capabilities without installing or mutating the environment.
 - Add project/session environment selection UI in
   `apps/web/src/scient/compute/`.
-- Add execution transcript, stdout/stderr, traceback, and PNG rendering.
-- Add editor actions (run selection, cell, file in session).
+- Expose at most one live project session while retaining prior session
+  lifetimes under fresh IDs; never overwrite or resume a terminal history.
+- Add execution transcript, stdout/stderr, traceback, and static PNG/SVG rendering.
+- Add a Python file surface with Code/Split/Results modes, contextual run
+  selection/cell/file actions, an immediately visible selected-run result,
+  compact source context, and compact run history. Do not duplicate submitted
+  code or storage identifiers in the result surface.
+- Add optional, bounded live-variable inspection as a secondary Results view:
+  refresh after terminal executions (including failures), clear on restart,
+  never persist the snapshot, and never attribute it to historical sessions.
+- Keep the project Compute surface as secondary session/history navigation and
+  omit a generic Phase 4 code composer.
+- Configure the Python kernel's Matplotlib integration so ordinary displayed
+  figures are emitted as Jupyter image output and render inline before opening
+  in the existing full image viewer. Also retain supported PNG/SVG project files
+  created or changed during an execution through the shared project-output
+  observer. Printing a path alone is never interpreted as a figure, and the
+  Python/Jupyter transport never scans the project filesystem.
 - Add interrupt, restart, and stop controls.
 - Record saved-versus-dirty source truth and the exact submitted code/hash.
 - Keep source, transcript, figures, and generated project files connected to the
@@ -2195,8 +2366,9 @@ historical truth or leaving a false "running" state.
 - The settings renderer consumes the adapter registry/capability model without
   a Python-only branch in the shared settings domain.
 - End-to-end: select Python, start session, run two state-dependent
-  executions, view a figure, interrupt, restart, review history after app
-  restart.
+  executions, inspect bounded live variables after success and failure, view a
+  figure, interrupt, restart, confirm the namespace view clears, and review
+  history after app restart.
 - Workspace lifecycle: computation modifies a clean open file, conflicts with a
   dirty buffer, and creates a new project file without a hidden compute copy.
 
@@ -2208,12 +2380,14 @@ historical truth or leaving a false "running" state.
 3. Start a project session.
 4. Execute dependent pieces of code.
 5. Inspect text and a figure.
-6. Interrupt a long operation.
-7. Restart the namespace.
-8. Review the prior history after restarting Scient.
-9. Return from an execution to its ordinary source editor and open its figure
-   through the existing preview surface.
-10. Observe computation-created project files through the normal workspace
+6. Inspect a bounded current-variable summary without confusing it with run
+   history.
+7. Interrupt a long operation.
+8. Restart the namespace and see the live variable view clear.
+9. Review the prior history after restarting Scient.
+10. Return from an execution to its ordinary source editor and open its figure
+    through the existing preview surface.
+11. Observe computation-created project files through the normal workspace
     lifecycle.
 
 ### Phase 4.1: Portable project results
@@ -2289,15 +2463,13 @@ corrupt history, or lying UI state.
 
 **Add incrementally (each with its own contract and safety gate):**
 
-1. Variable list and bounded previews.
-2. NumPy array inspection.
-3. pandas and Polars table previews.
-4. SVG output.
-5. Plotly MIME output (reuse existing `plotlySpec.ts` validators).
-6. Vega-Lite MIME output (reuse existing `vegaLiteSpec.ts` validators).
-7. Sandboxed HTML.
-8. Completion and inspection.
-9. Multiple sessions per project.
+1. Rich NumPy array inspection and bounded slicing.
+2. pandas and Polars table previews.
+3. Plotly MIME output (reuse existing `plotlySpec.ts` validators).
+4. Vega-Lite MIME output (reuse existing `vegaLiteSpec.ts` validators).
+5. Sandboxed HTML.
+6. Completion and richer language inspection.
+7. Multiple sessions per project.
 
 Each addition receives its own contract and safety gate. These do not need to
 land as one release.
@@ -2474,8 +2646,12 @@ The focused suite covers:
   late output, kernel death during execution.
 - Persistence: interrupted writes, corrupted records, hash mismatch, path
   traversal, server-restart recovery to `lost`.
-- Bounded snapshot-plus-notification delivery with monotonic recovery cursors;
-  client gap recovery remains a Phase 4 acceptance item.
+- Bounded snapshot-plus-notification delivery, duplicate suppression, sequence
+  gap detection, frozen uncertain deltas, and durable client rehydration.
+- Execution-scoped project-image observation: new and changed PNG/SVG files,
+  immutable retained bytes, path/content-hash provenance, symlink refusal,
+  hidden/dependency-directory exclusion, per-file and per-execution bounds, and
+  fail-closed behavior when a complete project inventory cannot be observed.
 - Seams: `pnpm analysis:seams:check` extended to compute roots.
 
 ### 23.1 Qualification ledger
@@ -2483,14 +2659,16 @@ The focused suite covers:
 Keep evidence here, or in a later dedicated qualification record, rather than
 encoding it into the architecture status.
 
-| Gate                                           | Current evidence                                                                                                                                                            | Status                              |
-| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
-| Architecture                                   | Product principles and domain/dependency boundaries accepted by the owner                                                                                                   | Accepted                            |
-| Phase 1-3 implementation candidate             | Focused compute/server/Python suites, real Python 3.12 kernel, typechecks, targeted format/lint, seam check, and production server build pass on the current macOS worktree | Local evidence; under qualification |
-| Stable candidate                               | Phase 3 remains an uncommitted worktree patch and is not based on current `origin/main`                                                                                     | Pending                             |
-| Phase 2 real-kernel portability                | ADR requires macOS, Windows, and Linux; the proposed hosted workflow covers macOS/Linux but is not yet committed or run, and Windows is absent                              | Pending                             |
-| Phase 4 product acceptance                     | Scientific Computing settings, RPC, authorization, client folding, editor/results surface, workspace freshness flow, and visual acceptance are not implemented              | Not started                         |
-| Packaged cross-platform and release acceptance | Phase 5 packaged-app tests, current-main integration, hosted required checks, and explicit release approval                                                                 | Pending                             |
+| Gate                                           | Current evidence                                                                                                                                                                                                                                                                                                                                                                                                          | Status                     |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
+| Architecture                                   | Product principles and domain/dependency boundaries accepted by the owner                                                                                                                                                                                                                                                                                                                                                 | Accepted                   |
+| Phase 1-3 implementation baseline              | Feature-branch commit `40c04094a45c`; focused compute/server/Python suites, real Python kernel, typechecks, format/lint, seam check, and production server build passed during foundation qualification                                                                                                                                                                                                                   | Locally qualified on macOS |
+| Phase 4 implementation candidate               | Scientific Computing settings, RPC/authorization, server-derived project identity, saved-source validation, bounded client folding/gap recovery, Code/Split/Results with explicit caret-aware `# %%` cells, focused run history, bounded transient live variables, inline signed PNG/SVG viewing, secondary project history, and workspace refresh are implemented in the current worktree                                | Implemented locally        |
+| Phase 4 backend qualification                  | 99 compute, 306 contracts, 623 client-runtime, 3,359 web, 3,545 server, and 83 bridge tests pass; eight gated real-kernel/product tests cover state and safe variables after success/failure/restart, ordinary `plt.show()` PNG, explicit SVG display, interruption, restart, loss, output flood, rapid execution, restart storms, durable history, bounded generated-project-image capture, and immutable retained bytes | Passed on macOS            |
+| Phase 4 visual product acceptance              | The owner rejected the initial composer/history-first surface; the replacement file-first Code/Split/Results workflow is implemented but deliberately has not been visually accepted yet                                                                                                                                                                                                                                  | Pending                    |
+| Stable Phase 4 candidate                       | Phase 4 remains an uncommitted worktree patch and has not been rebased onto current `origin/main`                                                                                                                                                                                                                                                                                                                         | Pending                    |
+| Phase 2 real-kernel portability                | ADR requires macOS, Windows, and Linux; hosted macOS/Linux and Windows evidence is not yet complete                                                                                                                                                                                                                                                                                                                       | Pending                    |
+| Packaged cross-platform and release acceptance | Local production web/server builds, exact bridge staging, and release smoke pass; Phase 5 installed-app tests, current-main integration, hosted required checks, and explicit release approval remain                                                                                                                                                                                                                     | Pending                    |
 
 Local test counts are evidence for one exact snapshot, not a substitute for a
 gate above. Phase 2 real-kernel portability and Phase 5 packaged-app acceptance
@@ -2520,7 +2698,8 @@ Implement and qualify the following architectural direction:
    never a second project filesystem.
 9. Compute-owned initial outputs and explicit provenance-preserving promotion,
    without premature shared artifact migration.
-10. One default project session in the first UI.
+10. At most one live project session in the first UI, with a fresh durable ID
+    for each lifetime and inspectable prior histories.
 11. Human and later agent operations in the same scientific system and review
     surface, with actor-specific authorization and ownership.
 12. No agent execution before the operation envelope and minimum reliability

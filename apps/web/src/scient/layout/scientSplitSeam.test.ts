@@ -34,4 +34,24 @@ describe("Scient split seams", () => {
     expect(surface).not.toContain("RightPanelResizeHandle");
     expect(surface).not.toContain("scient-latex-divider");
   });
+
+  it("shares fractional behavior between Python and LaTeX without sharing their storage", () => {
+    const python = readSource("../compute/ScientPythonComputeSurface.tsx");
+    const latex = readSource("../latex/ScientLatexSurface.tsx");
+
+    expect(python).toContain("useScientHorizontalSplit");
+    expect(latex).toContain("useScientHorizontalSplit");
+    expect(python).toContain("PYTHON_COMPUTE_SPLIT_STORAGE_KEY");
+    expect(latex).toContain("LATEX_SPLIT_RATIO_STORAGE_KEY");
+    expect(python).not.toContain("RightPanelResizeHandle");
+    expect(latex).not.toContain("scient-latex-divider");
+  });
+
+  it("keeps the Python and LaTeX view controls on the same outer radius", () => {
+    const python = readSource("../compute/ScientPythonComputeSurface.tsx");
+    const latexStyles = readSource("../latex/scient-latex.css");
+
+    expect(python).toContain("gap-px rounded-[6px] border");
+    expect(latexStyles).toMatch(/\.scient-latex-modes\s*\{[^}]*border-radius:\s*6px;/su);
+  });
 });

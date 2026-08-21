@@ -237,6 +237,30 @@ import {
   AnalysisSubscribeRunsInput,
   AnalysisVerifyRuntimeInput,
 } from "./scientAnalysis.ts";
+import {
+  ComputeExecutionRecord,
+  ComputeExecutionOutputs,
+  ComputeGatewayError,
+  ComputeGetProjectSessionResult,
+  ComputeInspectRuntimesInput,
+  ComputeListProjectExecutionsInput,
+  ComputeListProjectExecutionsResult,
+  ComputeListProjectOutputsInput,
+  ComputeListProjectSessionsResult,
+  ComputeOperationError,
+  ComputeProjectExecutionCommandInput,
+  ComputeProjectInput,
+  ComputeProjectSessionCommandInput,
+  ComputeProjectSessionInput,
+  ComputeRuntimeInspection,
+  ComputeRuntimeVerification,
+  ComputeSessionRecord,
+  ComputeSessionStreamEvent,
+  ComputeVariableSnapshot,
+  ComputeStartProjectSessionInput,
+  ComputeSubmitProjectExecutionInput,
+  ComputeVerifyRuntimeInput,
+} from "./scientCompute.ts";
 
 export const WS_METHODS = {
   // Project registry methods
@@ -261,6 +285,22 @@ export const WS_METHODS = {
   analysisCleanupRun: "analysis.cleanupRun",
   analysisCleanupProject: "analysis.cleanupProject",
   analysisPromoteRun: "analysis.promoteRun",
+
+  // Scient-owned stateful scientific compute methods
+  computeInspectRuntimes: "compute.inspectRuntimes",
+  computeVerifyRuntime: "compute.verifyRuntime",
+  computeStartSession: "compute.startSession",
+  computeListSessions: "compute.listSessions",
+  computeGetSession: "compute.getSession",
+  computeRestartSession: "compute.restartSession",
+  computeStopSession: "compute.stopSession",
+  computeSubmitExecution: "compute.submitExecution",
+  computeCancelExecution: "compute.cancelExecution",
+  computeInterruptSession: "compute.interruptSession",
+  computeListExecutions: "compute.listExecutions",
+  computeListOutputs: "compute.listOutputs",
+  computeInspectVariables: "compute.inspectVariables",
+  subscribeComputeSessions: "subscribe.computeSessions",
 
   // Shell methods
   shellOpenInEditor: "shell.openInEditor",
@@ -850,6 +890,97 @@ export const WsSubscribeAnalysisRunsRpc = Rpc.make(WS_METHODS.subscribeAnalysisR
   stream: true,
 });
 
+const ComputeRpcError = Schema.Union([
+  ComputeGatewayError,
+  ComputeOperationError,
+  EnvironmentAuthorizationError,
+]);
+
+export const WsComputeInspectRuntimesRpc = Rpc.make(WS_METHODS.computeInspectRuntimes, {
+  payload: ComputeInspectRuntimesInput,
+  success: ComputeRuntimeInspection,
+  error: ComputeRpcError,
+});
+
+export const WsComputeVerifyRuntimeRpc = Rpc.make(WS_METHODS.computeVerifyRuntime, {
+  payload: ComputeVerifyRuntimeInput,
+  success: ComputeRuntimeVerification,
+  error: ComputeRpcError,
+});
+
+export const WsComputeStartSessionRpc = Rpc.make(WS_METHODS.computeStartSession, {
+  payload: ComputeStartProjectSessionInput,
+  success: ComputeSessionRecord,
+  error: ComputeRpcError,
+});
+
+export const WsComputeListSessionsRpc = Rpc.make(WS_METHODS.computeListSessions, {
+  payload: ComputeProjectInput,
+  success: ComputeListProjectSessionsResult,
+  error: ComputeRpcError,
+});
+
+export const WsComputeGetSessionRpc = Rpc.make(WS_METHODS.computeGetSession, {
+  payload: ComputeProjectSessionInput,
+  success: ComputeGetProjectSessionResult,
+  error: ComputeRpcError,
+});
+
+export const WsComputeRestartSessionRpc = Rpc.make(WS_METHODS.computeRestartSession, {
+  payload: ComputeProjectSessionCommandInput,
+  success: ComputeSessionRecord,
+  error: ComputeRpcError,
+});
+
+export const WsComputeStopSessionRpc = Rpc.make(WS_METHODS.computeStopSession, {
+  payload: ComputeProjectSessionCommandInput,
+  success: ComputeSessionRecord,
+  error: ComputeRpcError,
+});
+
+export const WsComputeSubmitExecutionRpc = Rpc.make(WS_METHODS.computeSubmitExecution, {
+  payload: ComputeSubmitProjectExecutionInput,
+  success: ComputeExecutionRecord,
+  error: ComputeRpcError,
+});
+
+export const WsComputeCancelExecutionRpc = Rpc.make(WS_METHODS.computeCancelExecution, {
+  payload: ComputeProjectExecutionCommandInput,
+  success: ComputeExecutionRecord,
+  error: ComputeRpcError,
+});
+
+export const WsComputeInterruptSessionRpc = Rpc.make(WS_METHODS.computeInterruptSession, {
+  payload: ComputeProjectSessionCommandInput,
+  success: ComputeSessionRecord,
+  error: ComputeRpcError,
+});
+
+export const WsComputeListExecutionsRpc = Rpc.make(WS_METHODS.computeListExecutions, {
+  payload: ComputeListProjectExecutionsInput,
+  success: ComputeListProjectExecutionsResult,
+  error: ComputeRpcError,
+});
+
+export const WsComputeListOutputsRpc = Rpc.make(WS_METHODS.computeListOutputs, {
+  payload: ComputeListProjectOutputsInput,
+  success: ComputeExecutionOutputs,
+  error: ComputeRpcError,
+});
+
+export const WsComputeInspectVariablesRpc = Rpc.make(WS_METHODS.computeInspectVariables, {
+  payload: ComputeProjectSessionCommandInput,
+  success: ComputeVariableSnapshot,
+  error: ComputeRpcError,
+});
+
+export const WsSubscribeComputeSessionsRpc = Rpc.make(WS_METHODS.subscribeComputeSessions, {
+  payload: ComputeProjectInput,
+  success: ComputeSessionStreamEvent,
+  error: ComputeRpcError,
+  stream: true,
+});
+
 export const WsShellOpenInEditorRpc = Rpc.make(WS_METHODS.shellOpenInEditor, {
   payload: LaunchEditorInput,
   error: Schema.Union([ExternalLauncherError, EnvironmentAuthorizationError]),
@@ -1269,6 +1400,20 @@ export const WsRpcGroup = RpcGroup.make(
   WsAnalysisCleanupProjectRpc,
   WsAnalysisPromoteRunRpc,
   WsSubscribeAnalysisRunsRpc,
+  WsComputeInspectRuntimesRpc,
+  WsComputeVerifyRuntimeRpc,
+  WsComputeStartSessionRpc,
+  WsComputeListSessionsRpc,
+  WsComputeGetSessionRpc,
+  WsComputeRestartSessionRpc,
+  WsComputeStopSessionRpc,
+  WsComputeSubmitExecutionRpc,
+  WsComputeCancelExecutionRpc,
+  WsComputeInterruptSessionRpc,
+  WsComputeListExecutionsRpc,
+  WsComputeListOutputsRpc,
+  WsComputeInspectVariablesRpc,
+  WsSubscribeComputeSessionsRpc,
   WsShellOpenInEditorRpc,
   WsFilesystemBrowseRpc,
   WsFilesystemPrepareFileOpenRpc,

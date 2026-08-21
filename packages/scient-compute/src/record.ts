@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as Effect from "effect/Effect";
 
 import {
   ComputeDiagnostic,
@@ -50,7 +51,14 @@ export const ComputeSourceRange = Schema.Struct({
   startColumn: Count,
   endLine: Count,
   endColumn: Count,
-});
+}).check(
+  Schema.makeFilter(
+    (range) =>
+      range.endLine > range.startLine ||
+      (range.endLine === range.startLine && range.endColumn >= range.startColumn),
+    { expected: "an ordered, end-exclusive source range" },
+  ),
+);
 export type ComputeSourceRange = typeof ComputeSourceRange.Type;
 
 /**
@@ -171,6 +179,8 @@ export const ComputeExecutionResultRecord = Schema.Struct({
   finishedAt: Schema.NullOr(ObservedAt),
   diagnostics: Schema.Array(ComputeDiagnostic).check(Schema.isMaxLength(64)),
   outputCount: Count,
+  /** Retained image outputs, summarized so result selection never scans transcripts. */
+  imageCount: Count.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
   outputBytes: ByteLength,
   truncated: Schema.Boolean,
   failureReason: Schema.NullOr(ShortText),

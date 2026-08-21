@@ -23,6 +23,7 @@ so back-pressure slows the producer instead of dropping a user's output.
 from __future__ import annotations
 
 import asyncio
+import ast
 import contextlib
 import json
 import os
@@ -46,6 +47,7 @@ MAX_TRACEBACK_LINE = 4096
 MAX_ERROR_NAME = 256
 MAX_ERROR_VALUE = 16 * 1024
 MAX_PNG_BASE64 = 11 * 1024 * 1024
+MAX_SVG_TEXT = 8 * 1024 * 1024
 MAX_DETAIL = 4096
 MAX_DIAGNOSTIC = 1024
 
@@ -65,19 +67,130 @@ IDLE_POLL_INTERVAL = 0.02
 LIVENESS_INTERVAL = 1.0
 INTERRUPT_BUSY_TIMEOUT = 2.0
 INTERRUPT_SETTLE_TIMEOUT = 2.0
+INSPECTION_TIMEOUT = 5.0
+
+MAX_VARIABLES = 200
+MAX_VARIABLE_NAME = 256
+MAX_VARIABLE_TYPE = 256
+MAX_VARIABLE_TEXT = 4096
+MAX_SAFE_JSON_INTEGER = 9_007_199_254_740_991
 
 SERVER_MESSAGE_TYPES = {
     "hello",
     "start-kernel",
     "execute",
     "interrupt",
+    "inspect-variables",
     "restart",
     "shutdown",
 }
-REQUEST_ID_TYPES = {"execute", "interrupt"}
+REQUEST_ID_TYPES = {"execute", "interrupt", "inspect-variables"}
+
+
+# A single expression keeps inspection out of the user's history and namespace.
+# It summarizes only exact built-in values plus well-known array/table shapes;
+# it never calls an arbitrary object's repr or walks its attributes.
+VARIABLE_INSPECTION_EXPRESSION = r"""
+(
+    lambda _b, _g, _j, _s, _function_type, _builtin_function_type: (
+        lambda _known_scientific_types: (
+            lambda _names: _j.dumps(
+                {
+                    "variables": [
+                        (
+                            lambda _v, _t: {
+                                "name": _n,
+                                "typeName": _b.type.__getattribute__(_t, "__name__")[:256],
+                                "shape": (
+                                    _b.str(_b.tuple(_v.shape))[:4096]
+                                    if _t in _known_scientific_types
+                                    and _b.len(_v.shape) <= 8
+                                    else None
+                                ),
+                                "size": (
+                                    _b.len(_v)
+                                    if _t
+                                    in {
+                                        _b.str,
+                                        _b.bytes,
+                                        _b.bytearray,
+                                        _b.list,
+                                        _b.tuple,
+                                        _b.dict,
+                                        _b.set,
+                                        _b.frozenset,
+                                        _b.range,
+                                    }
+                                    else (
+                                        _b.int(_v.size)
+                                        if _t in _known_scientific_types
+                                        else None
+                                    )
+                                ),
+                                "preview": (
+                                    (_b.repr(_v[:160]) + ("..." if _b.len(_v) > 160 else ""))[
+                                        :4096
+                                    ]
+                                    if _t in {_b.str, _b.bytes, _b.bytearray}
+                                    else (
+                                        _b.repr(_v)[:4096]
+                                        if _t
+                                        in {
+                                            _b.int,
+                                            _b.float,
+                                            _b.complex,
+                                            _b.bool,
+                                            _b.type(None),
+                                            _b.range,
+                                        }
+                                        else None
+                                    )
+                                ),
+                            }
+                        )(_g[_n], _b.type(_g[_n]))
+                        for _n in _names[:200]
+                    ],
+                    "truncated": _b.len(_names) > 200,
+                },
+                separators=(",", ":"),
+            )
+        )(
+            _b.sorted(
+                _n
+                for _n, _v in _g.items()
+                if not _n.startswith("_")
+                and _n not in {"In", "Out", "exit", "get_ipython", "open", "quit"}
+                and _b.len(_n) <= 256
+                and _b.type(_v)
+                not in {_b.type(_s), _function_type, _builtin_function_type}
+                and not _b.isinstance(_v, _b.type)
+            )
+        )
+    )(
+        {
+            _candidate
+            for _module_name, _type_name in {
+                ("numpy", "ndarray"),
+                ("pandas.core.frame", "DataFrame"),
+                ("pandas.core.series", "Series"),
+            }
+            for _module in [_s.modules.get(_module_name)]
+            if _b.type(_module) is _b.type(_s)
+            for _candidate in [_b.vars(_module).get(_type_name)]
+            if _b.isinstance(_candidate, _b.type)
+        }
+    )
+)(
+    __import__("builtins"),
+    globals(),
+    __import__("json"),
+    __import__("sys"),
+    __import__("builtins").type(lambda: None),
+    __import__("builtins").type(__import__("builtins").len),
+)
+""".strip()
 
 UNSUPPORTED_IOPUB_TYPES = {"update_display_data", "clear_output"}
-
 
 class ProtocolViolation(Exception):
     """An inbound message violated the stateful bridge protocol."""
@@ -353,7 +466,7 @@ class ScientBridge:
         self._kernel_transitioning = False
         self._running = True
         self._handshake_complete = False
-        self._capabilities = ["execute", "interrupt", "restart", "shutdown"]
+        self._capabilities = ["execute", "interrupt", "restart", "shutdown", "variables"]
         self._stop = asyncio.Event()
         self._write_lock = asyncio.Lock()
 
@@ -712,8 +825,16 @@ class ScientBridge:
         # explains itself there, and that is what reaches the launch diagnostics.
         # ``jupyter_client`` replays these arguments on restart, so the
         # redirection survives every generation of this session.
+        kernel_environment = os.environ.copy()
+        # A scientific session is a rich-output surface, so Matplotlib should
+        # publish figures through Jupyter rather than opening a window or using
+        # a headless backend that silently discards ``show()``.  ipykernel
+        # already depends on matplotlib-inline; importing Matplotlib remains
+        # lazy and user code can still choose another backend explicitly.
+        kernel_environment["MPLBACKEND"] = "module://matplotlib_inline.backend_inline"
         await self._kernel_manager.start_kernel(
             cwd=working_directory,
+            env=kernel_environment,
             stdout=subprocess.DEVNULL,
         )
         self._kernel_pid = self._read_kernel_pid()
@@ -870,6 +991,101 @@ class ScientBridge:
         await self._flush()
         self._execution_task = asyncio.create_task(self._correlate(request_id, msg_id))
 
+    async def _handle_inspect_variables(self, request_id: str) -> None:
+        """Return a bounded live namespace summary without entering history."""
+        if self._kernel_client is None:
+            raise ProtocolViolation("No kernel is running.")
+        if self._kernel_transitioning:
+            raise ProtocolViolation("The kernel is changing generation.")
+        if self._mapping.active_request_id is not None:
+            raise ProtocolViolation("An execution is already active.")
+
+        try:
+            msg_id = self._kernel_client.execute(
+                "",
+                silent=True,
+                store_history=False,
+                user_expressions={"scient_variables": VARIABLE_INSPECTION_EXPRESSION},
+                allow_stdin=False,
+            )
+            deadline = time.monotonic() + INSPECTION_TIMEOUT
+            reply: Optional[dict[str, Any]] = None
+            while time.monotonic() < deadline:
+                try:
+                    message = await self._kernel_client.get_shell_msg(timeout=0)
+                except queue.Empty:
+                    if not await self._kernel_alive():
+                        raise RuntimeError("The kernel process exited during variable inspection.")
+                    await asyncio.sleep(IDLE_POLL_INTERVAL)
+                    continue
+                if message.get("parent_header", {}).get("msg_id") != msg_id:
+                    continue
+                content = message.get("content", {})
+                reply = content if isinstance(content, dict) else {}
+                break
+
+            if reply is None:
+                raise TimeoutError("Variable inspection timed out.")
+            if reply.get("status") != "ok":
+                raise RuntimeError("The kernel could not inspect its current variables.")
+            expression = reply.get("user_expressions", {}).get("scient_variables", {})
+            if expression.get("status") != "ok":
+                raise RuntimeError("The runtime could not summarize its current variables.")
+            plain = expression.get("data", {}).get("text/plain")
+            if not isinstance(plain, str):
+                raise RuntimeError("The runtime returned an unreadable variable summary.")
+            encoded = ast.literal_eval(plain)
+            if not isinstance(encoded, str):
+                raise RuntimeError("The runtime returned an invalid variable summary.")
+            decoded = json.loads(encoded)
+            variables = decoded.get("variables") if isinstance(decoded, dict) else None
+            if not isinstance(variables, list):
+                raise RuntimeError("The runtime returned an invalid variable list.")
+
+            normalized: list[dict[str, Any]] = []
+            for candidate in variables[:MAX_VARIABLES]:
+                if not isinstance(candidate, dict):
+                    continue
+                name = candidate.get("name")
+                type_name = candidate.get("typeName")
+                if not isinstance(name, str) or not name or len(name) > MAX_VARIABLE_NAME:
+                    continue
+                if not isinstance(type_name, str) or not type_name:
+                    continue
+                shape = candidate.get("shape")
+                size = candidate.get("size")
+                preview = candidate.get("preview")
+                normalized.append(
+                    {
+                        "name": name,
+                        "typeName": type_name[:MAX_VARIABLE_TYPE],
+                        "shape": shape[:MAX_VARIABLE_TEXT] if isinstance(shape, str) else None,
+                        "size": size
+                        if isinstance(size, int) and 0 <= size <= MAX_SAFE_JSON_INTEGER
+                        else None,
+                        "preview": preview[:MAX_VARIABLE_TEXT]
+                        if isinstance(preview, str)
+                        else None,
+                    }
+                )
+            self._send(
+                "variables",
+                {
+                    "variables": normalized,
+                    "truncated": bool(decoded.get("truncated"))
+                    or len(variables) > MAX_VARIABLES,
+                    "error": None,
+                },
+                request_id,
+            )
+        except Exception as error:  # noqa: BLE001 - inspection is optional, not fatal
+            detail, _ = truncate_utf8(str(error), MAX_DETAIL)
+            self._send(
+                "variables",
+                {"variables": [], "truncated": False, "error": detail},
+                request_id,
+            )
+
     async def _correlate(self, request_id: str, msg_id: str) -> None:
         """Pump both kernel channels until the execution is complete.
 
@@ -1025,6 +1241,21 @@ class ScientBridge:
             else:
                 self._send("display", {"mediaType": "image/png", "data": png}, request_id)
             return
+        svg = data.get("image/svg+xml")
+        if isinstance(svg, str):
+            if len(svg.encode("utf-8")) > MAX_SVG_TEXT:
+                self._send_warning("output-truncated", "SVG exceeded limit.", request_id)
+            else:
+                try:
+                    self._send(
+                        "display", {"mediaType": "image/svg+xml", "data": svg}, request_id
+                    )
+                except ValueError:
+                    # Escaping can make a JSON string larger than its UTF-8
+                    # source. Preserve the session and record the dropped
+                    # figure instead of letting frame encoding fail execution.
+                    self._send_warning("output-truncated", "SVG exceeded frame limit.", request_id)
+            return
         plain = data.get("text/plain")
         if isinstance(plain, str):
             text, truncated = truncate_utf8(plain, MAX_STREAM_TEXT)
@@ -1032,7 +1263,7 @@ class ScientBridge:
             if truncated:
                 self._send_warning("output-truncated", "Text display exceeded limit.", request_id)
             return
-        # Neither representation the protocol carries.  Say what was dropped
+        # Neither representation the protocol carries. Say what was dropped
         # rather than letting the output vanish: someone who rendered a plot
         # through an SVG-only backend should learn that, not see nothing at all.
         dropped = ", ".join(sorted(str(key) for key in data)[:8])
@@ -1141,6 +1372,8 @@ class ScientBridge:
             await self._handle_execute(payload, request_id)
         elif msg_type == "interrupt":
             await self._handle_interrupt(request_id)
+        elif msg_type == "inspect-variables":
+            await self._handle_inspect_variables(request_id)
         elif msg_type == "restart":
             await self._restart_kernel(payload["nextGeneration"])
         elif msg_type == "shutdown":

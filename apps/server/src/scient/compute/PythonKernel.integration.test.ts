@@ -156,6 +156,7 @@ describe.runIf(Boolean(TEST_PYTHON))("Python kernel integration", () => {
       Effect.gen(function* () {
         const harness = yield* integration();
         expect(harness.ready.runtime.languageId).toBe("python");
+        expect(harness.ready.capabilities).toContain("variables");
         const bridgePid = harness.ready.runtime.transportProcessId!;
         const firstKernelPid = harness.ready.runtime.runtimeProcessId!;
         expect(processExists(bridgePid)).toBe(true);
@@ -183,6 +184,16 @@ describe.runIf(Boolean(TEST_PYTHON))("Python kernel integration", () => {
               event.output.text.includes("42"),
           ),
         ).toBe(true);
+
+        const variables = yield* harness.channel.inspectVariables({
+          requestId: ComputeRequestId.make("variables-after-state"),
+          expectedGeneration: INITIAL_COMPUTE_SESSION_GENERATION,
+        });
+        expect(variables.variables).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ name: "answer", typeName: "int", preview: "41" }),
+          ]),
+        );
 
         const streamsAndError = yield* execute(
           harness,
@@ -218,7 +229,7 @@ describe.runIf(Boolean(TEST_PYTHON))("Python kernel integration", () => {
         const figure = yield* execute(
           harness,
           "figure",
-          "import io\nimport matplotlib.pyplot as plt\nfrom IPython.display import Image, display\nplt.plot([1, 2], [3, 4])\nbuffer = io.BytesIO()\nplt.savefig(buffer, format='png')\ndisplay(Image(data=buffer.getvalue()))",
+          "import matplotlib.pyplot as plt\nplt.plot([1, 2], [3, 4])\nplt.show()",
         );
         yield* Effect.logInfo("real-kernel: figure complete");
         const image = figure.find(
@@ -227,6 +238,28 @@ describe.runIf(Boolean(TEST_PYTHON))("Python kernel integration", () => {
         expect(image?._tag).toBe("output");
         if (image?._tag === "output") {
           expect(image.image?.bytes.byteLength).toBeGreaterThan(100);
+        }
+
+        const svgFigure = yield* execute(
+          harness,
+          "svg-figure",
+          [
+            "class InlineSvg:",
+            "    def _repr_svg_(self):",
+            '        return \'<svg xmlns="http://www.w3.org/2000/svg"><circle r="2"/></svg>\'',
+            "display(InlineSvg())",
+          ].join("\n"),
+        );
+        yield* Effect.logInfo("real-kernel: SVG figure complete");
+        const svgImage = svgFigure.find(
+          (event) =>
+            event._tag === "output" &&
+            event.output._tag === "image" &&
+            event.output.mediaType === "image/svg+xml",
+        );
+        expect(svgImage?._tag).toBe("output");
+        if (svgImage?._tag === "output") {
+          expect(new TextDecoder().decode(svgImage.image?.bytes)).toContain("<svg");
         }
 
         const loopId = ComputeRequestId.make("interrupt-loop");

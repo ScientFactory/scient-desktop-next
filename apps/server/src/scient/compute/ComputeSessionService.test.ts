@@ -7,6 +7,7 @@ import {
   ComputeTransportKind,
   INITIAL_COMPUTE_SESSION_GENERATION,
   MAXIMUM_PENDING_COMPUTE_EXECUTIONS,
+  nextComputeSessionGeneration,
   createSimulatedComputeTransport,
   type ComputeCapability,
   type ComputeLanguageAdapter,
@@ -52,6 +53,7 @@ const FULL_CAPABILITIES: ReadonlyArray<ComputeCapability> = [
   "interrupt",
   "restart",
   "shutdown",
+  "variables",
 ];
 
 const PROFILE: ComputeRuntimeProfile = {
@@ -182,6 +184,7 @@ const adapterFor = (readiness: ComputeRuntimeReadiness): ComputeLanguageAdapter 
       errorName: report.name,
       message: report.value,
       traceback: report.traceback,
+      frames: [],
     },
   ],
   fingerprintEnvironment: () =>
@@ -403,6 +406,67 @@ describe("compute session startup", () => {
           expect(second).toEqual(first);
           // A second runtime for the same panel would leak a process.
           expect(test.opened()).toEqual([SESSION_ID]);
+        }),
+      );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("rejects reuse of a live session id for a different start request", () =>
+    Effect.gen(function* () {
+      const test = yield* harness();
+
+      yield* test.use(
+        Effect.gen(function* () {
+          const service = yield* ComputeSessionService;
+          yield* service.startSession(startInput());
+          const error = yield* Effect.flip(
+            service.startSession(startInput({ configuredExecutable: "/different/python" })),
+          );
+          expect(error.reason).toBe("session-conflict");
+          expect(test.opened()).toEqual([SESSION_ID]);
+        }),
+      );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("admits exactly one live session per project under a simultaneous start", () =>
+    Effect.gen(function* () {
+      const test = yield* harness();
+
+      yield* test.use(
+        Effect.gen(function* () {
+          const service = yield* ComputeSessionService;
+          const ids = [ComputeSessionId.make("session-a"), ComputeSessionId.make("session-b")];
+          const outcomes = yield* Effect.forEach(
+            ids,
+            (sessionId) =>
+              service.startSession(startInput({ sessionId })).pipe(
+                Effect.map((session) => ({ _tag: "started" as const, session })),
+                Effect.catch((error) => Effect.succeed({ _tag: "failed" as const, error })),
+              ),
+            { concurrency: "unbounded" },
+          );
+          const started = outcomes.flatMap((outcome) =>
+            outcome._tag === "started" ? [outcome.session] : [],
+          );
+          const failed = outcomes.flatMap((outcome) =>
+            outcome._tag === "failed" ? [outcome.error] : [],
+          );
+          expect(started).toHaveLength(1);
+          expect(failed.map((error) => error.reason)).toEqual(["session-conflict"]);
+          expect(test.opened()).toHaveLength(1);
+
+          const winner = started[0]!;
+          yield* service.stopSession({
+            projectId: PROJECT_ID,
+            sessionId: winner.sessionId,
+            expectedGeneration: winner.generation,
+          });
+          const next = yield* service.startSession(
+            startInput({ sessionId: ComputeSessionId.make("session-c") }),
+          );
+          expect(next.status).toBe("ready");
+          expect(test.opened()).toHaveLength(2);
         }),
       );
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
@@ -676,6 +740,7 @@ describe("compute session execution", () => {
               errorName: "ZeroDivisionError",
               message: "division by zero",
               traceback: ["Traceback (most recent call last):", "ZeroDivisionError"],
+              frames: [],
             },
           ]);
 
@@ -691,6 +756,7 @@ describe("compute session execution", () => {
                 errorName: "ZeroDivisionError",
                 message: "division by zero",
                 traceback: ["Traceback (most recent call last):", "ZeroDivisionError"],
+                frames: [],
               },
             },
           ]);
@@ -1250,6 +1316,7 @@ describe("compute session recovery", () => {
               finishedAt: null,
               diagnostics: [],
               outputCount: 0,
+              imageCount: 0,
               outputBytes: 0,
               truncated: false,
               failureReason: null,
@@ -1429,6 +1496,70 @@ describe("compute session subscriptions", () => {
 });
 
 describe("compute session reads", () => {
+  it.effect("inspects only an idle live namespace at its current generation", () =>
+    Effect.gen(function* () {
+      const test = yield* harness();
+
+      yield* test.use(
+        Effect.gen(function* () {
+          const service = yield* ComputeSessionService;
+          const session = yield* start;
+          expect(
+            yield* service.inspectVariables({
+              projectId: PROJECT_ID,
+              sessionId: SESSION_ID,
+              expectedGeneration: session.generation,
+            }),
+          ).toEqual({ generation: session.generation, variables: [], truncated: false });
+
+          const stale = yield* Effect.flip(
+            service.inspectVariables({
+              projectId: PROJECT_ID,
+              sessionId: SESSION_ID,
+              expectedGeneration: nextComputeSessionGeneration(session.generation),
+            }),
+          );
+          expect(stale.reason).toBe("generation-stale");
+
+          yield* submit("quiet-hold", "variables-busy");
+          yield* waitUntil(executionAt(ComputeExecutionId.make("variables-busy"), "running"));
+          const busy = yield* Effect.flip(
+            service.inspectVariables({
+              projectId: PROJECT_ID,
+              sessionId: SESSION_ID,
+              expectedGeneration: session.generation,
+            }),
+          );
+          expect(busy.reason).toBe("session-not-running");
+          expect(busy.message).toContain("after the running code finishes");
+        }),
+      );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("keeps variable inspection optional for runtimes without the capability", () =>
+    Effect.gen(function* () {
+      const test = yield* harness({
+        capabilities: FULL_CAPABILITIES.filter((one) => one !== "variables"),
+      });
+
+      yield* test.use(
+        Effect.gen(function* () {
+          const service = yield* ComputeSessionService;
+          const session = yield* start;
+          const failure = yield* Effect.flip(
+            service.inspectVariables({
+              projectId: PROJECT_ID,
+              sessionId: SESSION_ID,
+              expectedGeneration: session.generation,
+            }),
+          );
+          expect(failure.reason).toBe("capability-missing");
+        }),
+      );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect("answers for a session that was never started", () =>
     Effect.gen(function* () {
       const test = yield* harness();
@@ -1605,14 +1736,14 @@ describe("compute session under load", () => {
       yield* test.use(
         Effect.gen(function* () {
           const service = yield* ComputeSessionService;
-          const projects = [0, 1, 2].map((index) => ComputeProjectId.make(`load-project-${index}`));
-          const plan = projects.flatMap((projectId) =>
-            [0, 1, 2, 3].map((index) => ({
-              projectId,
-              sessionId: ComputeSessionId.make(`${projectId}-session-${index}`),
-              executionId: ComputeExecutionId.make(`${projectId}-execution-${index}`),
-            })),
+          const projects = Array.from({ length: 12 }, (_, index) =>
+            ComputeProjectId.make(`load-project-${index}`),
           );
+          const plan = projects.map((projectId) => ({
+            projectId,
+            sessionId: ComputeSessionId.make(`${projectId}-session`),
+            executionId: ComputeExecutionId.make(`${projectId}-execution`),
+          }));
 
           // Started and driven at once, because a per-session lock that is
           // really a per-service lock only shows up when they overlap.
@@ -1660,7 +1791,7 @@ describe("compute session under load", () => {
 
           for (const projectId of projects) {
             const sessions = yield* service.listSessions({ projectId });
-            expect(sessions).toHaveLength(4);
+            expect(sessions).toHaveLength(1);
           }
           expect(test.opened()).toHaveLength(plan.length);
         }),
@@ -1807,6 +1938,7 @@ describe("compute session under load", () => {
                 finishedAt: null,
                 diagnostics: [],
                 outputCount: 0,
+                imageCount: 0,
                 outputBytes: 0,
                 truncated: false,
                 failureReason: null,

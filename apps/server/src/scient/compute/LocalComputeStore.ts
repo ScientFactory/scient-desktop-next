@@ -41,12 +41,12 @@ import * as ServerConfig from "../../config.ts";
  *     session.json                     the session record, atomically replaced
  *     journal.ndjson                   what happened, in order, append-only
  *     output.ndjson                    output belonging to no execution
- *     outputs/<hex>.png                image bytes, content-addressed
+ *     outputs/<hex>.<ext>              image bytes, content-addressed
  *     executions/<executionId>/
  *         request.json                 written once, never rewritten
  *         result.json                  atomically replaced as it progresses
  *         output.ndjson                this execution's output, append-only
- *         outputs/<hex>.png            its image bytes, content-addressed
+ *         outputs/<hex>.<ext>          its image bytes, content-addressed
  *
  * Splitting a request from its result is what makes recovery honest rather than
  * a guess: a request with no result is an execution that was in flight when the
@@ -161,6 +161,7 @@ export class LocalComputeStore extends Context.Service<
       readonly sessionId: ComputeSessionId;
       readonly executionId: ComputeExecutionId | null;
       readonly contentHash: string;
+      readonly mediaType: ComputeImageMediaType;
       readonly bytes: Uint8Array;
     }) => Effect.Effect<{ readonly fileName: string }, LocalComputeStoreError>;
     readonly loadProjectIds: () => Effect.Effect<
@@ -224,6 +225,10 @@ async function sha256File(filePath: string): Promise<string> {
     await handle.close();
   }
   return `sha256:${hash.digest("hex")}`;
+}
+
+function imageFileExtension(mediaType: ComputeImageMediaType): ".png" | ".svg" {
+  return mediaType === "image/png" ? ".png" : ".svg";
 }
 
 async function directoryByteLength(directory: string): Promise<number> {
@@ -444,6 +449,7 @@ const make = Effect.gen(function* () {
     readonly sessionId: ComputeSessionId;
     readonly executionId: ComputeExecutionId | null;
     readonly contentHash: string;
+    readonly mediaType: ComputeImageMediaType;
     readonly bytes: Uint8Array;
   }) =>
     Effect.gen(function* () {
@@ -483,7 +489,7 @@ const make = Effect.gen(function* () {
           new Error("The image bytes do not match the hash they were reported under."),
         );
       }
-      const fileName = `${digest[1]}.png`;
+      const fileName = `${digest[1]}${imageFileExtension(input.mediaType)}`;
       const directory = path.join(owner, "outputs");
       const filePath = path.join(directory, fileName);
       yield* fs
@@ -745,7 +751,7 @@ const make = Effect.gen(function* () {
       );
       if (metadata === undefined || metadata._tag !== "image") return null;
 
-      const fileName = `${digest[1]}.png`;
+      const fileName = `${digest[1]}${imageFileExtension(metadata.mediaType)}`;
       const filePath = path.join(owner, "outputs", fileName);
       const info = yield* Effect.tryPromise({
         try: async () => {

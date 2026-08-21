@@ -57,13 +57,30 @@ class FakeKernelClient:
         self.iopub = list(iopub or [])
         self.shell = list(shell or [])
         self.executed = []
+        self.execute_requests = []
         self.execute_error = None
         self.channels_stopped = False
 
-    def execute(self, code, silent=False, store_history=True, allow_stdin=False):
+    def execute(
+        self,
+        code,
+        silent=False,
+        store_history=True,
+        user_expressions=None,
+        allow_stdin=False,
+    ):
         if self.execute_error is not None:
             raise self.execute_error
         self.executed.append(code)
+        self.execute_requests.append(
+            {
+                "code": code,
+                "silent": silent,
+                "store_history": store_history,
+                "user_expressions": user_expressions,
+                "allow_stdin": allow_stdin,
+            }
+        )
         return "msg-%d" % len(self.executed)
 
     async def get_iopub_msg(self, timeout=None):
@@ -330,12 +347,12 @@ class TestBridgeHandshake(unittest.TestCase):
 
     def test_hello_rejects_missing_capabilities(self):
         b, _ = make_bridge(initialized=False)
-        message = self._hello(["execute", "interrupt", "restart", "shutdown", "variables"])
+        message = self._hello(["execute", "interrupt", "restart", "shutdown", "stdin"])
         b._validate_message(message)
         b._handle_hello(message)
         msgs = queued(b)
         self.assertEqual(msgs[0]["type"], "fatal")
-        self.assertIn("variables", msgs[0]["payload"]["reason"])
+        self.assertIn("stdin", msgs[0]["payload"]["reason"])
         self.assertFalse(b._running)
         self.assertTrue(b._stop.is_set())
 
@@ -415,6 +432,16 @@ class TestBridgeIOPubMapping(unittest.TestCase):
         self.assertEqual(msgs[0]["payload"]["mediaType"], "text/plain")
         self.assertEqual(msgs[0]["payload"]["text"], "42")
 
+    def test_display_svg_maps_to_display_event(self):
+        source = '<svg xmlns="http://www.w3.org/2000/svg"><circle r="2"/></svg>'
+        self.b._handle_iopub(
+            "display_data", {"data": {"image/svg+xml": source}}, "req-1"
+        )
+        msgs = queued(self.b)
+        self.assertEqual(msgs[0]["type"], "display")
+        self.assertEqual(msgs[0]["payload"]["mediaType"], "image/svg+xml")
+        self.assertEqual(msgs[0]["payload"]["data"], source)
+
     def test_oversized_png_warns_instead_of_sending(self):
         oversized = "A" * (bridge.MAX_PNG_BASE64 + 1)
         self.b._handle_iopub("display_data", {"data": {"image/png": oversized}}, "req-1")
@@ -429,6 +456,27 @@ class TestBridgeIOPubMapping(unittest.TestCase):
         # more bytes than the limit -- which an ASCII-only count would miss.
         oversized = "\u00e9" * (bridge.MAX_PNG_BASE64 // 2 + 1)
         self.b._handle_iopub("display_data", {"data": {"image/png": oversized}}, "req-1")
+        msgs = queued(self.b)
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["type"], "warning")
+        self.assertEqual(msgs[0]["payload"]["code"], "output-truncated")
+
+    def test_oversized_svg_warns_instead_of_sending(self):
+        oversized = "é" * (bridge.MAX_SVG_TEXT // 2 + 1)
+        self.b._handle_iopub(
+            "display_data", {"data": {"image/svg+xml": oversized}}, "req-1"
+        )
+        msgs = queued(self.b)
+        self.assertEqual(len(msgs), 1)
+        self.assertEqual(msgs[0]["type"], "warning")
+        self.assertEqual(msgs[0]["payload"]["code"], "output-truncated")
+
+    def test_svg_that_expands_past_frame_limit_warns_instead_of_failing(self):
+        self.b._peer_frame_limit = 1024
+        source = "<svg>" + ("x" * 2000) + "</svg>"
+        self.b._handle_iopub(
+            "display_data", {"data": {"image/svg+xml": source}}, "req-1"
+        )
         msgs = queued(self.b)
         self.assertEqual(len(msgs), 1)
         self.assertEqual(msgs[0]["type"], "warning")
@@ -506,14 +554,13 @@ class TestBridgeIOPubMapping(unittest.TestCase):
     def test_unsupported_media_types_are_named_rather_than_dropped(self):
         self.b._handle_iopub(
             "display_data",
-            {"data": {"text/html": "<b>bold</b>", "image/svg+xml": "<svg/>"}},
+            {"data": {"text/html": "<b>bold</b>"}},
             "req-1",
         )
         msgs = queued(self.b)
         self.assertEqual(len(msgs), 1)
         self.assertEqual(msgs[0]["payload"]["code"], "runtime-warning")
         self.assertIn("text/html", msgs[0]["payload"]["detail"])
-        self.assertIn("image/svg+xml", msgs[0]["payload"]["detail"])
 
 
 class TestBridgeExecute(unittest.IsolatedAsyncioTestCase):
@@ -558,6 +605,119 @@ class TestBridgeExecute(unittest.IsolatedAsyncioTestCase):
         self.b._mapping.active_request_id = "req-1"
         with self.assertRaises(bridge.ProtocolViolation):
             await self.b._handle_execute({"code": "1"}, "req-2")
+
+
+class TestBridgeVariables(unittest.IsolatedAsyncioTestCase):
+    """Variable inspection is bounded, correlated and never enters history."""
+
+    def setUp(self):
+        self.b, self.stdout = make_bridge()
+        self.manager = FakeKernelManager()
+        self.b._kernel_manager = self.manager
+
+    async def test_returns_a_bounded_snapshot_from_a_hidden_expression(self):
+        encoded = json.dumps(
+            {
+                "variables": [
+                    {
+                        "name": "answer",
+                        "typeName": "int",
+                        "shape": None,
+                        "size": None,
+                        "preview": "42",
+                    }
+                ],
+                "truncated": False,
+            },
+            separators=(",", ":"),
+        )
+        self.b._kernel_client = FakeKernelClient(
+            shell=[
+                shell_reply(
+                    {
+                        "status": "ok",
+                        "user_expressions": {
+                            "scient_variables": {
+                                "status": "ok",
+                                "data": {"text/plain": repr(encoded)},
+                            }
+                        },
+                    }
+                )
+            ]
+        )
+
+        await self.b._handle_inspect_variables("variables-1")
+
+        request = self.b._kernel_client.execute_requests[0]
+        self.assertEqual(request["code"], "")
+        self.assertTrue(request["silent"])
+        self.assertFalse(request["store_history"])
+        self.assertFalse(request["allow_stdin"])
+        self.assertIn("scient_variables", request["user_expressions"])
+        messages = queued(self.b)
+        self.assertEqual(messages[0]["type"], "variables")
+        self.assertEqual(messages[0]["requestId"], "variables-1")
+        self.assertEqual(messages[0]["payload"]["variables"][0]["preview"], "42")
+        self.assertIsNone(messages[0]["payload"]["error"])
+
+    async def test_inspection_failure_is_nonfatal_and_bounded(self):
+        self.b._kernel_client = FakeKernelClient(
+            shell=[shell_reply({"status": "error", "ename": "RuntimeError"})]
+        )
+        await self.b._handle_inspect_variables("variables-1")
+        message = queued(self.b)[0]
+        self.assertEqual(message["type"], "variables")
+        self.assertEqual(message["payload"]["variables"], [])
+        self.assertIn("could not inspect", message["payload"]["error"])
+        self.assertTrue(self.b._running)
+
+    async def test_refuses_to_race_an_execution(self):
+        self.b._kernel_client = FakeKernelClient()
+        self.b._mapping.active_request_id = "run-1"
+        with self.assertRaisesRegex(bridge.ProtocolViolation, "already active"):
+            await self.b._handle_inspect_variables("variables-1")
+        self.assertEqual(self.b._kernel_client.execute_requests, [])
+
+    def test_summary_expression_never_calls_a_user_defined_repr(self):
+        class Hostile:
+            called = False
+
+            def __repr__(self):
+                Hostile.called = True
+                raise RuntimeError("must not run")
+
+        class ndarray:
+            __module__ = "numpy"
+            shape_called = False
+
+            @property
+            def shape(self):
+                ndarray.shape_called = True
+                raise RuntimeError("must not run")
+
+            @property
+            def size(self):
+                ndarray.shape_called = True
+                raise RuntimeError("must not run")
+
+        namespace = {
+            "answer": 42,
+            "large_text": "x" * 10_000,
+            "items": [1, 2, 3],
+            "hostile": Hostile(),
+            "spoofed_array": ndarray(),
+        }
+        decoded = json.loads(eval(bridge.VARIABLE_INSPECTION_EXPRESSION, namespace))
+        by_name = {item["name"]: item for item in decoded["variables"]}
+        self.assertFalse(Hostile.called)
+        self.assertFalse(ndarray.shape_called)
+        self.assertEqual(by_name["answer"]["preview"], "42")
+        self.assertEqual(by_name["items"]["size"], 3)
+        self.assertIsNone(by_name["hostile"]["preview"])
+        self.assertIsNone(by_name["spoofed_array"]["shape"])
+        self.assertIsNone(by_name["spoofed_array"]["size"])
+        self.assertLessEqual(len(by_name["large_text"]["preview"]), 4096)
 
 
 class TestBridgeCorrelation(unittest.IsolatedAsyncioTestCase):

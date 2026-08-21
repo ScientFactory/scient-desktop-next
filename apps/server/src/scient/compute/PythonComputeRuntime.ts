@@ -5,7 +5,7 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
-import { ComputeRuntimeError } from "@scientfactory/compute";
+import { ComputeRuntimeError, REQUIRED_COMPUTE_CAPABILITIES } from "@scientfactory/compute";
 import { ExecutionRunId, type ExecutionProcessPort } from "@scientfactory/execution";
 import { HostProcessEnvironment } from "@t3tools/shared/hostProcess";
 import * as Duration from "effect/Duration";
@@ -20,9 +20,18 @@ import * as Stream from "effect/Stream";
 import { ExecutionProcess } from "../execution/LocalExecutionProcess.ts";
 import { DuplexProcess } from "../execution/LocalDuplexProcess.ts";
 import { sanitizeComputeEnvironment } from "./ComputeEnvironmentPolicy.ts";
-import { layerWithRuntimeBindings, type ComputeRuntimeBinding } from "./ComputeSessionService.ts";
+import * as ComputeProjectOutputObserver from "./ComputeProjectOutputObserver.ts";
+import {
+  DEFAULT_COMPUTE_SESSION_SERVICE_OPTIONS,
+  layerWithRuntimeBindings,
+  type ComputeRuntimeBinding,
+} from "./ComputeSessionService.ts";
 import { makeJupyterBridgeTransport } from "./JupyterBridgeTransport.ts";
-import { PROBE_SCRIPT, makePythonRuntimeAdapter } from "./PythonRuntimeAdapter.ts";
+import {
+  PROBE_SCRIPT,
+  PYTHON_LANGUAGE_ID,
+  makePythonRuntimeAdapter,
+} from "./PythonRuntimeAdapter.ts";
 
 /**
  * The Python runtime as the running server has it: a real interpreter probe and
@@ -264,6 +273,12 @@ export const pythonRuntimeBinding: Effect.Effect<
   return {
     adapter: makePythonRuntimeAdapter(spawnProbe, bridgePath),
     transport: makeJupyterBridgeTransport(duplexProcesses, {}),
+    descriptor: {
+      languageId: PYTHON_LANGUAGE_ID,
+      displayName: "Python",
+      sourceExtensions: [".py"],
+      capabilities: [...REQUIRED_COMPUTE_CAPABILITIES, "variables"],
+    },
   };
 });
 
@@ -296,4 +311,6 @@ export const layer = layerWithRuntimeBindings(
       ),
     ),
   ),
+  DEFAULT_COMPUTE_SESSION_SERVICE_OPTIONS,
+  ComputeProjectOutputObserver.liveLayer,
 );

@@ -132,6 +132,19 @@ describe("compute execution source", () => {
     expect(decoded).toMatchObject({ bufferState: "dirty", revision: null, range: null });
   });
 
+  it("refuses a document range whose end precedes its start", () => {
+    expect(() =>
+      decodeSource({
+        _tag: "document",
+        origin: "selection",
+        path: "notebooks/one.py",
+        bufferState: "dirty",
+        revision: "3",
+        range: { startLine: 12, startColumn: 4, endLine: 10, endColumn: 0 },
+      }),
+    ).toThrow();
+  });
+
   it("never stores a locator on a console execution, whatever it was handed", () => {
     // The union exists for this. Decoding drops what the member has no field
     // for, so a console execution cannot come back out carrying a path -- which
@@ -206,6 +219,7 @@ describe("compute execution records", () => {
     });
     expect(queued.queuePosition).toBe(2);
     expect(queued.startedAt).toBeNull();
+    expect(queued.imageCount).toBe(0);
   });
 
   it("bounds how many diagnostics one execution may store", () => {

@@ -291,7 +291,7 @@ export function computeFingerprint(
  * Does not pre-check candidates.  The probe classifies spawn errors directly.
  */
 export function discoverCandidates(
-  projectRoot: string,
+  projectRoot: string | null,
   configuredExecutable: string | null,
   platform: string,
 ): ReadonlyArray<{ readonly executable: string; readonly source: ComputeRuntimeSource }> {
@@ -302,11 +302,13 @@ export function discoverCandidates(
     candidates.push({ executable: configuredExecutable, source: "configured" });
   }
 
-  const venvPython = isWindows
-    ? NodePath.join(projectRoot, ".venv", "Scripts", "python.exe")
-    : NodePath.join(projectRoot, ".venv", "bin", "python");
-  if (NodeFS.existsSync(venvPython)) {
-    candidates.push({ executable: venvPython, source: "project" });
+  if (projectRoot !== null) {
+    const venvPython = isWindows
+      ? NodePath.join(projectRoot, ".venv", "Scripts", "python.exe")
+      : NodePath.join(projectRoot, ".venv", "bin", "python");
+    if (NodeFS.existsSync(venvPython)) {
+      candidates.push({ executable: venvPython, source: "project" });
+    }
   }
 
   if (isWindows) {
@@ -398,6 +400,7 @@ export function makePythonRuntimeAdapter(
 
   const discover: ComputeLanguageAdapter["discover"] = (request) =>
     Effect.gen(function* () {
+      if (request.refresh === true) probeCache.clear();
       const platform = yield* HostProcessPlatform;
       const candidates = discoverCandidates(
         request.projectRoot,
@@ -482,8 +485,8 @@ export function makePythonRuntimeAdapter(
       catch: (cause) => runtimeError("prepare", "The launch request was not usable.", cause),
     });
 
-  const normalizeDiagnostic: ComputeLanguageAdapter["normalizeDiagnostic"] = (report) =>
-    normalizePythonDiagnostic(report);
+  const normalizeDiagnostic: ComputeLanguageAdapter["normalizeDiagnostic"] = (report, context) =>
+    normalizePythonDiagnostic(report, context);
 
   const fingerprintEnvironment: ComputeLanguageAdapter["fingerprintEnvironment"] = (profile) =>
     Effect.gen(function* () {

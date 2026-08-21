@@ -6,6 +6,7 @@ export type SettingsPath =
   | "/settings/keybindings"
   | "/settings/providers"
   | "/settings/integrations"
+  | "/settings/scientific-computing"
   | "/settings/source-control"
   | "/settings/connections"
   | "/settings/archived";
@@ -30,6 +31,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/keybindings": "Keybindings",
   "/settings/providers": "Providers",
   "/settings/integrations": "Integrations",
+  "/settings/scientific-computing": "Scientific Computing",
   "/settings/source-control": "Source Control",
   "/settings/connections": "Connections",
   "/settings/archived": "Archive",
@@ -42,6 +44,17 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
  * here once instead of separately in the panel and the index.
  */
 export const SETTINGS_SEARCH_ITEMS = [
+  {
+    id: "scientific-computing",
+    title: "Scientific Computing",
+    to: "/settings/scientific-computing",
+  },
+  {
+    id: "scientific-computing-language",
+    title: "Scientific computing languages and runtimes",
+    to: "/settings/scientific-computing",
+    targetId: "scientific-computing",
+  },
   {
     id: "color-scheme",
     title: "Color scheme",

@@ -81,6 +81,7 @@ const fakeRAdapter: ComputeLanguageAdapter = {
       errorName: report.name,
       message: report.value,
       traceback: report.traceback.map(stripFrameDecoration).filter((frame) => frame.length > 0),
+      frames: [],
     },
   ],
   fingerprintEnvironment: (candidate) =>
@@ -194,6 +195,8 @@ describe("compute language boundary", () => {
         const completed = yield* next;
         expect(completed).toEqual({
           _tag: "completed",
+          sequence: 2,
+          observedAt: "2026-08-18T00:00:00.000Z",
           requestId: firstRequest,
           generation,
           outcome: "succeeded",
@@ -222,6 +225,8 @@ describe("compute language boundary", () => {
         });
         expect(yield* next).toEqual({
           _tag: "completed",
+          sequence: 2,
+          observedAt: "2026-08-18T00:00:00.000Z",
           requestId: runawayRequest,
           generation,
           outcome: "cancelled",
@@ -251,17 +256,21 @@ describe("compute language boundary", () => {
   );
 
   it("normalizes a runtime error nothing else in Scient understands", () => {
-    const diagnostics = fakeRAdapter.normalizeDiagnostic({
-      name: "simpleError",
-      value: "object 'answer' not found",
-      traceback: ["1: \u001B[31mread(answer)\u001B[0m", "2: eval(expr)", "   "],
-    });
+    const diagnostics = fakeRAdapter.normalizeDiagnostic(
+      {
+        name: "simpleError",
+        value: "object 'answer' not found",
+        traceback: ["1: \u001B[31mread(answer)\u001B[0m", "2: eval(expr)", "   "],
+      },
+      { projectRoot: "/project", submittedSource: null },
+    );
 
     expect(diagnostics).toEqual([
       {
         errorName: "simpleError",
         message: "object 'answer' not found",
         traceback: ["read(answer)", "eval(expr)"],
+        frames: [],
       },
     ] satisfies ReadonlyArray<ComputeDiagnostic>);
   });
