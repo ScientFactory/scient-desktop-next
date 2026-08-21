@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  isPreviewStaticImageSurfaceDescriptor,
+  previewStaticImageContentKey,
+  previewStaticImageDescriptorKey,
+  previewStaticImageReloadKey,
   previewStaticImageRevisionKey,
   type PreviewStaticImageSurfaceDescriptor,
 } from "./previewStaticImageSurface";
@@ -77,5 +81,24 @@ describe("previewStaticImageRevisionKey", () => {
     const keys = [...resources, computeOutput()].map(keyFor);
 
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("separates byte identity, reload requests, and compact viewer status", () => {
+    const base: PreviewStaticImageSurfaceDescriptor = {
+      surfaceId: "logical-figure",
+      label: "Figure 1",
+      fileName: "figure.png",
+      mediaType: "image/png",
+      sourcePath: "figure.png",
+      resource: { _tag: "workspace-file", cwd: "/project", relativePath: "figure.png" },
+      contentKey: hashA,
+      reloadKey: "run-1",
+    };
+    const next = { ...base, reloadKey: "run-2", statusLabel: "Previous figure" };
+    expect(previewStaticImageContentKey(next)).toBe(hashA);
+    expect(previewStaticImageReloadKey(next)).toBe("run-2");
+    expect(previewStaticImageDescriptorKey(next)).not.toBe(previewStaticImageDescriptorKey(base));
+    expect(isPreviewStaticImageSurfaceDescriptor(next)).toBe(true);
+    expect(isPreviewStaticImageSurfaceDescriptor({ ...next, statusLabel: "" })).toBe(false);
   });
 });

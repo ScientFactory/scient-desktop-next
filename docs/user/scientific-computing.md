@@ -62,11 +62,24 @@ recorded revision and source range still match the project file.
 The results surface shows one selected run rather than an ever-growing feed. Its compact history
 selector lets you revisit earlier runs of the same file. Static PNG and SVG figures emitted with
 normal display behavior such as `plt.show()` or IPython's `display(...)` appear inline at a useful
-size and open in Scient's existing full static-image viewer when selected. PNG and SVG project
-files created or changed by that execution also appear inline, so an ordinary script that saves
-figures remains useful without notebook-only display calls. Discovery is bounded and reports when
-a project or execution exceeds its safety limits; Scient never guesses figure paths from printed
-console text.
+size and open in Scient's existing full static-image viewer when selected. A compact action on each
+figure moves it into the shared movable, resizable floating viewer. Moving a figure between the full
+and floating viewers preserves one presentation owner rather than showing two copies; closing that
+viewer stops its updates and later runs never reopen it.
+
+A viewer opened from the current result can follow a generated project figure by its project path,
+or a runtime figure by its language, saved full-file source path, and figure position. It advances
+only after a newer matching run succeeds. Failed, cancelled, interrupted, or lost runs keep the last
+good image. A successful full-file run that omits a followed runtime figure keeps the prior image
+labelled **Previous figure**. New bytes are decoded before replacing the visible image, while an
+identical-content rerun renews its retained resource without resetting zoom. Figures from a cell,
+selection, unsaved buffer, historical run, or output without stable provenance remain immutable
+snapshots.
+
+PNG and SVG project files created or changed by that execution also appear inline, so an ordinary
+script that saves figures remains useful without notebook-only display calls. Discovery is bounded
+and reports when a project or execution exceeds its safety limits; Scient never guesses figure paths
+from printed console text.
 
 While the newest run is still updating, its text and status remain current but Results keeps the
 last successful figures from the same file and session generation visible. The figures are labelled

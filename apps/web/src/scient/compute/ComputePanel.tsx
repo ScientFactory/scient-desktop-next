@@ -108,6 +108,7 @@ function ResultLoadError(props: { readonly error: string; readonly noun: "result
 }
 
 function ComputeExecutionCard(props: {
+  readonly allowFigureFollowing: boolean;
   readonly cwd: string;
   readonly environmentId: EnvironmentId;
   readonly execution: ComputeExecutionRecord;
@@ -237,6 +238,8 @@ function ComputeExecutionCard(props: {
           </p>
         ) : (
           <ComputeOutputView
+            allowFigureFollowing={props.allowFigureFollowing}
+            cwd={props.cwd}
             environmentId={props.environmentId}
             session={props.session}
             executionId={props.execution.request.executionId}
@@ -251,7 +254,7 @@ function ComputeExecutionCard(props: {
             {...(persisted === null ? {} : { corruptLineCount: persisted.corruptLineCount })}
             clipped={persisted === null && props.liveOutputsClipped}
             threadRef={props.threadRef}
-            sourcePath={source._tag === "document" ? source.path : null}
+            source={source}
           />
         )}
         {props.figureFallback !== null && !outputs.some((output) => output._tag === "image") ? (
@@ -284,17 +287,15 @@ function ComputeExecutionCard(props: {
               </p>
             ) : (
               <ComputeOutputView
+                allowFigureFollowing={props.allowFigureFollowing}
+                cwd={props.cwd}
                 environmentId={props.environmentId}
                 session={props.session}
                 executionId={props.figureFallback.execution.request.executionId}
                 outputs={fallbackOutputs}
                 emptyLabel="Previous figures are unavailable."
                 threadRef={props.threadRef}
-                sourcePath={
-                  props.figureFallback.execution.request.source._tag === "document"
-                    ? props.figureFallback.execution.request.source.path
-                    : null
-                }
+                source={props.figureFallback.execution.request.source}
               />
             )}
           </div>
@@ -387,6 +388,7 @@ function ComputeSessionMessages(props: {
             </p>
           ) : (
             <ComputeOutputView
+              cwd={props.cwd}
               environmentId={props.environmentId}
               session={props.session}
               executionId={null}
@@ -394,6 +396,7 @@ function ComputeSessionMessages(props: {
               {...(persisted === null ? {} : { corruptLineCount: persisted.corruptLineCount })}
               clipped={persisted === null && props.liveOutputsClipped}
               threadRef={props.threadRef}
+              source={null}
             />
           )}
         </div>
@@ -599,8 +602,10 @@ export function ComputePanel(props: {
     for (const session of events.data?.sessions.values() ?? []) {
       byId.set(session.sessionId, session);
     }
-    return [...byId.values()].toSorted((left, right) =>
-      right.createdAt.localeCompare(left.createdAt),
+    return [...byId.values()].toSorted(
+      (left, right) =>
+        right.createdAt.localeCompare(left.createdAt) ||
+        right.sessionId.localeCompare(left.sessionId),
     );
   }, [events.data?.sessions, sessions.data]);
   const liveSession =
@@ -644,7 +649,11 @@ export function ComputePanel(props: {
           (execution.request.source._tag === "document" &&
             execution.request.source.path === props.sourcePath),
       )
-      .toSorted((left, right) => right.request.submittedAt.localeCompare(left.request.submittedAt));
+      .toSorted(
+        (left, right) =>
+          right.request.submittedAt.localeCompare(left.request.submittedAt) ||
+          right.request.executionId.localeCompare(left.request.executionId),
+      );
   }, [events.data?.executions, executions.data, props.sourcePath, selectedSession]);
   const selectedExecution =
     selectedExecutions.find((execution) => execution.request.executionId === selectedExecutionId) ??
@@ -661,6 +670,9 @@ export function ComputePanel(props: {
     selectedExecution,
     selectedLiveOutputState?.hasImage ?? false,
   );
+  const selectedIsCurrentResult =
+    selectedSession?.sessionId === allSessions[0]?.sessionId &&
+    selectedExecution?.request.executionId === selectedExecutions[0]?.request.executionId;
   const fallbackLiveOutputState =
     selectedSession === null || figureFallback === null
       ? undefined
@@ -1078,6 +1090,7 @@ export function ComputePanel(props: {
                 ) : null}
                 {selectedExecution ? (
                   <ComputeExecutionCard
+                    allowFigureFollowing={selectedIsCurrentResult}
                     key={selectedExecution.request.executionId}
                     cwd={props.cwd}
                     environmentId={props.environmentId}

@@ -279,6 +279,54 @@ describe.runIf(Boolean(TEST_PYTHON))("compute product backend", () => {
           expect(new TextDecoder().decode(yield* fs.readFile(resolved.path))).toContain("<svg");
         }
 
+        const followedRuntimeHashes: Array<ReadonlyArray<string>> = [];
+        for (const revision of ["first", "second"] as const) {
+          const code = [
+            "class FollowedSvg:",
+            "    def __init__(self, label): self.label = label",
+            "    def _repr_svg_(self):",
+            "        return f'<svg xmlns=\"http://www.w3.org/2000/svg\"><text>{self.label}</text></svg>'",
+            `display(FollowedSvg('${revision}-one'))`,
+            `display(FollowedSvg('${revision}-two'))`,
+          ].join("\n");
+          const file = yield* workspaceFileSystem.writeFile({
+            cwd: projectRoot,
+            relativePath: "followed_figures.py",
+            contents: code,
+          });
+          const executionId = ComputeExecutionId.make(`phase-4-follow-${revision}`);
+          yield* gateway.submitExecution({
+            cwd: projectRoot,
+            sessionId,
+            executionId,
+            expectedGeneration: session.generation,
+            code,
+            source: {
+              _tag: "document",
+              origin: "file",
+              path: file.relativePath,
+              bufferState: "saved",
+              revision: file.revision,
+              range: null,
+            },
+          });
+          expect(
+            (yield* waitForTerminal(gateway, projectRoot, sessionId, executionId)).result?.status,
+          ).toBe("succeeded");
+          const outputs = yield* gateway.listOutputs({
+            cwd: projectRoot,
+            sessionId,
+            executionId,
+          });
+          const runtimeImages = outputs.outputs.flatMap((item) =>
+            item._tag === "image" && item.origin?._tag === "runtime-display" ? [item] : [],
+          );
+          expect(runtimeImages).toHaveLength(2);
+          followedRuntimeHashes.push(runtimeImages.map((item) => item.contentHash));
+        }
+        expect(followedRuntimeHashes[1]?.[0]).not.toBe(followedRuntimeHashes[0]?.[0]);
+        expect(followedRuntimeHashes[1]?.[1]).not.toBe(followedRuntimeHashes[0]?.[1]);
+
         const generatedFiguresId = ComputeExecutionId.make("phase-4-generated-figures");
         yield* gateway.submitExecution({
           cwd: projectRoot,

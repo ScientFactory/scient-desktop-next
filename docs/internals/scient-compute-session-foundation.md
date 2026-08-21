@@ -5,8 +5,8 @@ Owner: Yaacov
 Created: 2026-08-18
 Purpose: Defines the architecture, domain model, transport boundary, persistence semantics, and phased implementation plan for stateful interactive scientific compute sessions in Scient. Written as a companion to the accepted `scient-analysis-runtime-foundation.md`, which governs one-shot terminal execution.
 Doc type: Architecture decision record
-Implementation maturity: Phases 1-4 local candidate; backend-qualified on macOS
-Product maturity: Phase 4 workflow implemented; owner visual acceptance pending
+Implementation maturity: Phases 1-4 committed candidate; backend-qualified on macOS
+Product maturity: Phase 4 core workflow owner-accepted; floating-figure follow candidate pending visual acceptance
 Release maturity: Not approved
 
 ## Planning Posture
@@ -33,17 +33,19 @@ or release has passed its own acceptance gate. Later evidence may amend an ADR;
 
 ### Qualification status (2026-08-21)
 
-Phases 1-3 are committed at the feature-branch baseline `40c04094a45c`. Phase 4
-exists as a local, uncommitted implementation candidate on top of that baseline.
-The settings, authorization, RPC gateway, client recovery/folding, project
+Phases 1-4 are committed at the feature-branch baseline `23d032effa`, whose
+history contains the current `origin/main` snapshot `72c78f00cc`. The settings,
+authorization, RPC gateway, client recovery/folding, project
 Compute surface, editor actions, output viewing, and workspace refresh path are
 implemented, including explicit caret-aware `# %%` cells and bounded transient
 live-variable inspection. Full affected-package and server suites, a real Python
 3.12 kernel, the end-to-end product backend, typechecks, format, lint, seam
 verification, production builds, exact bridge staging, and release smoke pass on
-this macOS worktree. Owner-led visual acceptance, hosted cross-platform evidence,
-current-main integration, and packaged-app acceptance remain separate pending
-gates; local evidence does not imply them.
+this macOS worktree. The owner accepted the core file-first workflow after manual
+testing. The later floating-figure follow slice is a separate local candidate;
+its visual acceptance, hosted cross-platform evidence, future-main integration,
+and packaged-app acceptance remain separate pending gates. Local evidence does
+not imply them.
 
 It coordinates with, but does not duplicate:
 
@@ -224,6 +226,36 @@ successful figures visible so useful visual context does not flash away. That
 fallback is explicitly labelled as belonging to the earlier execution and can
 never survive a newer successful execution that produced no figures. Selecting
 an older historical execution never mixes it with figures from another run.
+
+Opening a figure separates immutable result evidence from mutable presentation.
+The inline figure in Results always renders the retained bytes of that exact
+execution. A full or floating viewer opened from the current result may instead
+follow one stable, language-neutral figure reference:
+
+- a generated project figure follows its normalized project-relative path and
+  resolves through the ordinary workspace-file authority;
+- a runtime display follows its language, saved full-file source path, and
+  ordinal among runtime-display images only; and
+- a historical result, dirty buffer, selection, cell, console execution, or
+  image without stable provenance opens as an immutable retained snapshot.
+
+Following is presentation state, not a second compute record and not a promise
+that one session lives forever. The same reference may advance across session
+lifetimes. Only a newer successful matching execution can advance it; failed,
+cancelled, interrupted, or lost executions leave the last good revision in
+place. A successful matching full-file execution that omits a followed runtime
+display keeps the prior image visibly labelled as previous. Generated project
+files are never declared stale merely because an unrelated execution did not
+write them.
+
+The actual full-viewer tab or floating card owns the follow lifetime. Closing or
+replacing that surface stops the work, and passive reconciliation cannot reopen
+it. Revision ordering includes session creation and execution submission, so a
+late older asset read cannot roll a figure backward. A stream gap freezes live
+decisions until durable sessions, executions, and outputs are reread. Generic
+image viewers remain producer-neutral and keep the last decoded image visible
+while a newer signed resource loads; compute does not add Python- or
+MATLAB-specific behavior to shared viewer chrome.
 
 Source freshness is compact execution context, not a banner or a hash display.
 Dirty submissions remain labelled as unsaved. A saved submission is labelled
@@ -2351,6 +2383,10 @@ historical truth or leaving a false "running" state.
 - Record saved-versus-dirty source truth and the exact submitted code/hash.
 - Keep source, transcript, figures, and generated project files connected to the
   ordinary editor, workspace tree, and typed viewers.
+- Let a current, stably identified figure move between the ordinary full viewer
+  and the shared floating image card and follow later successful revisions.
+  Historical and unstable-source figures remain snapshots; closing the viewer
+  ends following.
 - Update `scient-analysis-seams.json` with new owned roots and diff signals.
 - Update release-smoke inventory.
 - Add user and internal documentation.
@@ -2659,16 +2695,17 @@ The focused suite covers:
 Keep evidence here, or in a later dedicated qualification record, rather than
 encoding it into the architecture status.
 
-| Gate                                           | Current evidence                                                                                                                                                                                                                                                                                                                                                                                                          | Status                     |
-| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
-| Architecture                                   | Product principles and domain/dependency boundaries accepted by the owner                                                                                                                                                                                                                                                                                                                                                 | Accepted                   |
-| Phase 1-3 implementation baseline              | Feature-branch commit `40c04094a45c`; focused compute/server/Python suites, real Python kernel, typechecks, format/lint, seam check, and production server build passed during foundation qualification                                                                                                                                                                                                                   | Locally qualified on macOS |
-| Phase 4 implementation candidate               | Scientific Computing settings, RPC/authorization, server-derived project identity, saved-source validation, bounded client folding/gap recovery, Code/Split/Results with explicit caret-aware `# %%` cells, focused run history, bounded transient live variables, inline signed PNG/SVG viewing, secondary project history, and workspace refresh are implemented in the current worktree                                | Implemented locally        |
-| Phase 4 backend qualification                  | 99 compute, 306 contracts, 623 client-runtime, 3,359 web, 3,545 server, and 83 bridge tests pass; eight gated real-kernel/product tests cover state and safe variables after success/failure/restart, ordinary `plt.show()` PNG, explicit SVG display, interruption, restart, loss, output flood, rapid execution, restart storms, durable history, bounded generated-project-image capture, and immutable retained bytes | Passed on macOS            |
-| Phase 4 visual product acceptance              | The owner rejected the initial composer/history-first surface; the replacement file-first Code/Split/Results workflow is implemented but deliberately has not been visually accepted yet                                                                                                                                                                                                                                  | Pending                    |
-| Stable Phase 4 candidate                       | Phase 4 remains an uncommitted worktree patch and has not been rebased onto current `origin/main`                                                                                                                                                                                                                                                                                                                         | Pending                    |
-| Phase 2 real-kernel portability                | ADR requires macOS, Windows, and Linux; hosted macOS/Linux and Windows evidence is not yet complete                                                                                                                                                                                                                                                                                                                       | Pending                    |
-| Packaged cross-platform and release acceptance | Local production web/server builds, exact bridge staging, and release smoke pass; Phase 5 installed-app tests, current-main integration, hosted required checks, and explicit release approval remain                                                                                                                                                                                                                     | Pending                    |
+| Gate                                           | Current evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Status                                                |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| Architecture                                   | Product principles and domain/dependency boundaries accepted by the owner                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 | Accepted                                              |
+| Phase 1-3 implementation baseline              | Feature-branch commit `40c04094a45c`; focused compute/server/Python suites, real Python kernel, typechecks, format/lint, seam check, and production server build passed during foundation qualification                                                                                                                                                                                                                                                                                                                                                                                                                                                   | Locally qualified on macOS                            |
+| Phase 4 implementation candidate               | Commit `23d032effa` contains Scientific Computing settings, RPC/authorization, server-derived project identity, saved-source validation, bounded client folding/gap recovery, Code/Split/Results with explicit caret-aware `# %%` cells, focused run history, bounded transient live variables, inline signed PNG/SVG viewing, secondary project history, and workspace refresh                                                                                                                                                                                                                                                                           | Committed locally                                     |
+| Phase 4 backend qualification                  | 99 compute, 306 contracts, 623 client-runtime, 3,359 web, 3,545 server, and 83 bridge tests pass; eight gated real-kernel/product tests cover state and safe variables after success/failure/restart, ordinary `plt.show()` PNG, explicit SVG display, interruption, restart, loss, output flood, rapid execution, restart storms, durable history, bounded generated-project-image capture, and immutable retained bytes                                                                                                                                                                                                                                 | Passed on macOS                                       |
+| Phase 4 visual product acceptance              | The owner rejected the initial composer/history-first surface, then manually tested and accepted the replacement file-first Code/Split/Results workflow. Floating-figure follow is a later candidate with separate visual acceptance.                                                                                                                                                                                                                                                                                                                                                                                                                     | Core accepted                                         |
+| Stable Phase 4 candidate                       | Commit `23d032effa` is a clean Phase 4 checkpoint and contains `origin/main` snapshot `72c78f00cc` in its ancestry. Future-main integration remains a moving release gate.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | Stable local checkpoint                               |
+| Floating-figure follow candidate               | Stable project-file and saved full-file runtime references, immutable historical snapshots, one full-or-floating presentation owner, passive no-resurrection updates, deterministic cross-session revision ordering, gap recovery, same-content zoom continuity, and decode-before-swap image transitions. 3,472 web and 3,593 server tests pass; the server run includes real Python 3.14/Jupyter reruns with two changed SVG figures, interruption, kernel loss, output flood, 40 rapid executions, and restart storms. Whole-repository typecheck, format, lint, Scient seam verification, production web build, diff hygiene, and release smoke pass. | Locally qualified on macOS; visual acceptance pending |
+| Phase 2 real-kernel portability                | ADR requires macOS, Windows, and Linux; hosted macOS/Linux and Windows evidence is not yet complete                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Pending                                               |
+| Packaged cross-platform and release acceptance | Local production web/server builds, exact bridge staging, and release smoke pass; Phase 5 installed-app tests, current-main integration, hosted required checks, and explicit release approval remain                                                                                                                                                                                                                                                                                                                                                                                                                                                     | Pending                                               |
 
 Local test counts are evidence for one exact snapshot, not a substitute for a
 gate above. Phase 2 real-kernel portability and Phase 5 packaged-app acceptance

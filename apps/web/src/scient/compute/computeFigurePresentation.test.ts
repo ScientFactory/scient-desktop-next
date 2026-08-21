@@ -10,7 +10,8 @@ import {
   type ComputeSessionRecord,
 } from "@t3tools/contracts";
 
-import { computeFigureSurface } from "./computeFigurePresentation";
+import { parseComputeFigureSurfaceId } from "./computeFigureReference";
+import { computeFigurePresentation } from "./computeFigurePresentation";
 
 describe("compute figure presentation", () => {
   it("keeps durable identity in the surface and leaves authorization to the viewer", () => {
@@ -54,13 +55,24 @@ describe("compute figure presentation", () => {
       width: 4,
       height: 3,
     };
-    const surface = computeFigureSurface({
+    const presentation = computeFigurePresentation({
+      allowFollowing: false,
+      cwd: "/project",
       session,
       executionId: ComputeExecutionId.make("execution-1"),
       output,
-      ordinal: 1,
-      sourcePath: "analysis.py",
+      displayOrdinal: 1,
+      runtimeDisplayOrdinal: 0,
+      source: {
+        _tag: "document",
+        origin: "file",
+        path: "analysis.py",
+        bufferState: "saved",
+        revision: null,
+        range: null,
+      },
     });
+    const surface = presentation.inline;
 
     expect(surface.resource).toEqual({
       _tag: "compute-output",
@@ -92,13 +104,16 @@ describe("compute figure presentation", () => {
       height: null,
     } as Extract<ComputeOutput, { _tag: "image" }>;
 
-    const surface = computeFigureSurface({
+    const surface = computeFigurePresentation({
+      allowFollowing: false,
+      cwd: "/project",
       session,
       executionId: ComputeExecutionId.make("execution-1"),
       output,
-      ordinal: 2,
-      sourcePath: "figure.py",
-    });
+      displayOrdinal: 2,
+      runtimeDisplayOrdinal: 0,
+      source: { _tag: "console" },
+    }).inline;
 
     expect(surface.fileName).toBe("figure-2.svg");
     expect(surface.mediaType).toBe("image/svg+xml");
@@ -126,16 +141,83 @@ describe("compute figure presentation", () => {
       },
     } as Extract<ComputeOutput, { _tag: "image" }>;
 
-    const surface = computeFigureSurface({
+    const presentation = computeFigurePresentation({
+      allowFollowing: true,
+      cwd: "/project",
       session,
       executionId: ComputeExecutionId.make("execution-1"),
       output,
-      ordinal: 1,
-      sourcePath: "analysis.py",
+      displayOrdinal: 1,
+      runtimeDisplayOrdinal: 0,
+      source: { _tag: "console" },
     });
+    const surface = presentation.viewer;
 
     expect(surface.label).toBe("figure-decay.svg");
     expect(surface.fileName).toBe("figure-decay.svg");
     expect(surface.sourcePath).toBe("results/figure-decay.svg");
+    expect(surface.resource).toEqual({
+      _tag: "workspace-file",
+      cwd: "/project",
+      relativePath: "results/figure-decay.svg",
+    });
+    expect(parseComputeFigureSurfaceId(surface.surfaceId)).toEqual({
+      _tag: "project-file",
+      projectId: session.projectId,
+      path: "results/figure-decay.svg",
+    });
+  });
+
+  it("keeps a runtime figure surface stable while exact retained resources advance", () => {
+    const session = {
+      sessionId: ComputeSessionId.make("session-1"),
+      projectId: ComputeProjectId.make("project-1"),
+      languageId: ComputeLanguageId.make("python"),
+      label: "Python",
+    } as ComputeSessionRecord;
+    const output = {
+      _tag: "image",
+      sequence: 1,
+      observedAt: "2026-08-20T12:00:01.000Z",
+      mediaType: "image/png",
+      contentHash: `sha256:${"d".repeat(64)}`,
+      byteLength: 12,
+      width: 4,
+      height: 3,
+      origin: { _tag: "runtime-display" },
+    } as Extract<ComputeOutput, { _tag: "image" }>;
+    const make = (executionId: string, allowFollowing = true) =>
+      computeFigurePresentation({
+        allowFollowing,
+        cwd: "/project",
+        session,
+        executionId: ComputeExecutionId.make(executionId),
+        output,
+        displayOrdinal: 4,
+        runtimeDisplayOrdinal: 2,
+        source: {
+          _tag: "document",
+          origin: "file",
+          path: "analysis.py",
+          bufferState: "saved",
+          revision: null,
+          range: null,
+        },
+      }).viewer;
+    const first = make("execution-1");
+    const second = make("execution-2");
+    expect(second.surfaceId).toBe(first.surfaceId);
+    expect(second.label).toBe("Figure 2");
+    expect(second.contentKey).toBe(first.contentKey);
+    expect(second.sourcePath).toBe("analysis.py");
+    expect(second.resource).not.toEqual(first.resource);
+    expect(parseComputeFigureSurfaceId(second.surfaceId)).toEqual({
+      _tag: "runtime-display",
+      projectId: session.projectId,
+      languageId: session.languageId,
+      path: "analysis.py",
+      ordinal: 2,
+    });
+    expect(parseComputeFigureSurfaceId(make("historical", false).surfaceId)?._tag).toBe("snapshot");
   });
 });

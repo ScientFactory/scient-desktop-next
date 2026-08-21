@@ -412,7 +412,11 @@ describe("rightPanelStore", () => {
 
   it("updates an open direct-image surface to the latest resource without changing its tab", () => {
     const first = staticImage("run-1");
-    const updated = staticImage("run-2");
+    const updated = {
+      ...staticImage("run-2"),
+      reloadKey: "revision-2",
+      statusLabel: "Previous figure",
+    };
     useRightPanelStore.getState().openScientArtifact(refA, first);
     useRightPanelStore.getState().updateScientArtifact(refA, updated);
 

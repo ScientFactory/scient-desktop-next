@@ -10,6 +10,7 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
+import { scientArtifactSurfaceId } from "~/scient/rightPanel/surfaces";
 
 export function ScientArtifactPreview(props: {
   readonly environmentId: EnvironmentId;
@@ -30,7 +31,9 @@ export function ScientArtifactPreview(props: {
       return;
     }
     usePreviewMiniPlayerStore.getState().openArtifact(props.threadRef, props.artifact);
-    useRightPanelStore.getState().close(props.threadRef);
+    useRightPanelStore
+      .getState()
+      .closeSurface(props.threadRef, scientArtifactSurfaceId(props.artifact));
   };
 
   return (

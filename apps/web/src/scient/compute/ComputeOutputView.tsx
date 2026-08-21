@@ -1,33 +1,67 @@
 import type {
   ComputeExecutionId,
+  ComputeExecutionRecord,
   ComputeOutput,
   ComputeSessionRecord,
   EnvironmentId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { CircleAlert, Image as ImageIcon, Info, LoaderCircle, RotateCcw } from "lucide-react";
+import {
+  CircleAlert,
+  Image as ImageIcon,
+  Info,
+  LoaderCircle,
+  PictureInPicture2,
+  RotateCcw,
+} from "lucide-react";
 
 import { useAssetUrlState } from "~/assets/assetUrls";
 import { Button } from "~/components/ui/button";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
+import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
-import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
+import { scientArtifactSurfaceId } from "~/scient/rightPanel/surfaces";
 
-import { computeFigureSurface } from "./computeFigurePresentation";
+import {
+  computeFigurePresentation,
+  type ComputeFigurePresentation,
+} from "./computeFigurePresentation";
 import { computeSystemEventLabel } from "./computeResultPresentation";
+
+type ComputeExecutionSource = ComputeExecutionRecord["request"]["source"];
 
 function outputKey(output: ComputeOutput, index: number): string {
   return `${output.sequence}:${output._tag}:${index}`;
 }
 
 function ComputeFigure(props: {
-  readonly artifact: PreviewStaticImageSurfaceDescriptor;
+  readonly presentation: ComputeFigurePresentation;
   readonly environmentId: EnvironmentId;
   readonly dimensions: string;
   readonly threadRef: ScopedThreadRef;
 }) {
-  const asset = useAssetUrlState(props.environmentId, props.artifact.resource);
-  const open = () =>
-    useRightPanelStore.getState().openScientArtifact(props.threadRef, props.artifact);
+  const asset = useAssetUrlState(props.environmentId, props.presentation.inline.resource);
+  const floated = usePreviewMiniPlayerStore((state) => {
+    const player = selectThreadPreviewMiniPlayer(state.byThreadKey, props.threadRef);
+    return (
+      player?.content.kind === "static-artifact" &&
+      player.content.artifact.surfaceId === props.presentation.viewer.surfaceId
+    );
+  });
+  const open = () => {
+    if (floated) usePreviewMiniPlayerStore.getState().close(props.threadRef);
+    useRightPanelStore.getState().openScientArtifact(props.threadRef, props.presentation.viewer);
+  };
+  const toggleFloating = () => {
+    const store = usePreviewMiniPlayerStore.getState();
+    if (floated) {
+      store.close(props.threadRef);
+      return;
+    }
+    store.openArtifact(props.threadRef, props.presentation.viewer);
+    const rightPanel = useRightPanelStore.getState();
+    rightPanel.closeSurface(props.threadRef, scientArtifactSurfaceId(props.presentation.viewer));
+  };
 
   return (
     <figure className="overflow-hidden rounded-md border border-border/70 bg-card">
@@ -35,12 +69,12 @@ function ComputeFigure(props: {
         type="button"
         className="flex min-h-44 w-full items-center justify-center bg-white p-3 outline-none transition hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-ring"
         onClick={open}
-        aria-label={`Open ${props.artifact.label} in the figure viewer`}
+        aria-label={`Open ${props.presentation.inline.label} in the figure viewer`}
       >
         {asset._tag === "Success" ? (
           <img
             src={asset.url}
-            alt={props.artifact.label}
+            alt={props.presentation.inline.label}
             loading="lazy"
             className="max-h-[min(60vh,42rem)] max-w-full object-contain"
           />
@@ -55,13 +89,31 @@ function ComputeFigure(props: {
         )}
       </button>
       <figcaption className="flex min-h-9 items-center gap-2 border-t border-border/60 px-3">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium">{props.artifact.label}</span>
+        <span className="min-w-0 flex-1 truncate text-xs font-medium">
+          {props.presentation.inline.label}
+        </span>
         <span className="shrink-0 text-[11px] text-muted-foreground">{props.dimensions}</span>
         {asset._tag === "Failure" ? (
           <Button size="icon-xs" variant="ghost" onClick={asset.refresh} aria-label="Retry figure">
             <RotateCcw />
           </Button>
         ) : null}
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                size="icon-xs"
+                variant={floated ? "secondary" : "ghost"}
+                onClick={toggleFloating}
+                aria-label={floated ? "Close floating figure" : "Float figure over the workspace"}
+                aria-pressed={floated}
+              />
+            }
+          >
+            <PictureInPicture2 />
+          </TooltipTrigger>
+          <TooltipPopup>{floated ? "Close floating figure" : "Float figure"}</TooltipPopup>
+        </Tooltip>
       </figcaption>
     </figure>
   );
@@ -100,6 +152,8 @@ function ComputeDiagnosticFrames(props: {
 }
 
 export function ComputeOutputView(props: {
+  readonly allowFigureFollowing?: boolean;
+  readonly cwd: string;
   readonly environmentId: EnvironmentId;
   readonly session: ComputeSessionRecord;
   readonly executionId: ComputeExecutionId | null;
@@ -108,13 +162,14 @@ export function ComputeOutputView(props: {
   readonly corruptLineCount?: number;
   readonly clipped?: boolean;
   readonly threadRef: ScopedThreadRef;
-  readonly sourcePath?: string | null;
+  readonly source?: ComputeExecutionSource | null;
 }) {
   if (props.outputs.length === 0 && !props.corruptLineCount && !props.clipped) {
     return <p className="text-xs text-muted-foreground">{props.emptyLabel ?? "No output."}</p>;
   }
 
   let imageOrdinal = 0;
+  let runtimeDisplayOrdinal = 0;
   return (
     <div className="space-y-2">
       {props.clipped ? (
@@ -173,17 +228,21 @@ export function ComputeOutputView(props: {
             );
           case "image": {
             imageOrdinal += 1;
-            const artifact = computeFigureSurface({
+            if (output.origin?._tag === "runtime-display") runtimeDisplayOrdinal += 1;
+            const presentation = computeFigurePresentation({
+              allowFollowing: props.allowFigureFollowing ?? false,
+              cwd: props.cwd,
               session: props.session,
               executionId: props.executionId,
               output,
-              ordinal: imageOrdinal,
-              sourcePath: props.sourcePath ?? null,
+              displayOrdinal: imageOrdinal,
+              runtimeDisplayOrdinal,
+              source: props.source ?? null,
             });
             return (
               <ComputeFigure
                 key={outputKey(output, index)}
-                artifact={artifact}
+                presentation={presentation}
                 environmentId={props.environmentId}
                 dimensions={
                   output.width && output.height

@@ -11,6 +11,12 @@ export interface PreviewStaticImageSurfaceDescriptor {
   readonly mediaType: PreviewStaticImageMediaType;
   readonly sourcePath: string;
   readonly resource: AssetResourceType;
+  /** Stable identity of the rendered bytes, when the producer knows it. */
+  readonly contentKey?: string;
+  /** Changes when a mutable resource should be resolved again. */
+  readonly reloadKey?: string;
+  /** Optional, compact presentation state shared by full and floating viewers. */
+  readonly statusLabel?: string;
 }
 
 export function previewStaticImageRevisionKey(image: PreviewStaticImageSurfaceDescriptor): string {
@@ -56,6 +62,30 @@ export function previewStaticImageRevisionKey(image: PreviewStaticImageSurfaceDe
   }
 }
 
+export function previewStaticImageContentKey(image: PreviewStaticImageSurfaceDescriptor): string {
+  return image.contentKey ?? previewStaticImageRevisionKey(image);
+}
+
+export function previewStaticImageReloadKey(image: PreviewStaticImageSurfaceDescriptor): string {
+  return image.reloadKey ?? previewStaticImageRevisionKey(image);
+}
+
+export function previewStaticImageDescriptorKey(
+  image: PreviewStaticImageSurfaceDescriptor,
+): string {
+  return JSON.stringify([
+    image.surfaceId,
+    image.label,
+    image.fileName,
+    image.mediaType,
+    image.sourcePath,
+    previewStaticImageRevisionKey(image),
+    image.contentKey ?? null,
+    image.reloadKey ?? null,
+    image.statusLabel ?? null,
+  ]);
+}
+
 const isAssetResource = Schema.is(AssetResource);
 
 export function isPreviewStaticImageSurfaceDescriptor(
@@ -73,6 +103,14 @@ export function isPreviewStaticImageSurfaceDescriptor(
     (candidate.mediaType === "image/png" || candidate.mediaType === "image/svg+xml") &&
     typeof candidate.sourcePath === "string" &&
     candidate.sourcePath.length > 0 &&
+    (candidate.contentKey === undefined ||
+      (typeof candidate.contentKey === "string" && candidate.contentKey.length > 0)) &&
+    (candidate.reloadKey === undefined ||
+      (typeof candidate.reloadKey === "string" && candidate.reloadKey.length > 0)) &&
+    (candidate.statusLabel === undefined ||
+      (typeof candidate.statusLabel === "string" &&
+        candidate.statusLabel.length > 0 &&
+        candidate.statusLabel.length <= 120)) &&
     isAssetResource(candidate.resource)
   );
 }

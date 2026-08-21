@@ -23,6 +23,7 @@
     "apps/server/src/orchestration/scient-fork/scientMigrator.ts",
     "apps/web/src/components/preview/PreviewImageSurface.tsx",
     "apps/web/src/components/preview/StaticAssetImageSurface.tsx",
+    "apps/web/src/components/preview/previewImageTransition.ts",
     "apps/web/src/components/preview/previewImageZoom.ts",
     "apps/web/src/previewStaticImageSurface.ts",
     "apps/web/src/scient/pdf/ScientPdfReader.tsx",

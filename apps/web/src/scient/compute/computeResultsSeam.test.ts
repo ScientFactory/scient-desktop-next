@@ -8,6 +8,14 @@ import { describe, expect, it } from "vite-plus/test";
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
 const panelSource = NodeFS.readFileSync(NodePath.join(here, "ComputePanel.tsx"), "utf8");
 const outputSource = NodeFS.readFileSync(NodePath.join(here, "ComputeOutputView.tsx"), "utf8");
+const followerSource = NodeFS.readFileSync(
+  NodePath.join(here, "ComputeFigureFollower.tsx"),
+  "utf8",
+);
+const artifactPreviewSource = NodeFS.readFileSync(
+  NodePath.join(here, "../artifacts/ScientArtifactPreview.tsx"),
+  "utf8",
+);
 const pythonActionsSource = NodeFS.readFileSync(
   NodePath.join(here, "PythonFileComputeActions.tsx"),
   "utf8",
@@ -38,5 +46,21 @@ describe("compute result surface seam", () => {
     expect(pythonActionsSource).toContain('title="Open Scientific Computing settings"');
     expect(pythonActionsSource).not.toContain("Settings2");
     expect(panelSource).toContain("!props.embedded && allSessions.length > 0");
+  });
+
+  it("follows only current stable figures through passive generic surfaces", () => {
+    expect(panelSource).toContain("selectedIsCurrentResult");
+    expect(panelSource).toContain("allowFigureFollowing={selectedIsCurrentResult}");
+    expect(outputSource).toContain("computeFigurePresentation");
+    expect(outputSource).toContain("Float figure over the workspace");
+    expect(outputSource).toContain("rightPanel.closeSurface");
+    expect(outputSource).toContain("if (floated) usePreviewMiniPlayerStore.getState().close");
+    expect(artifactPreviewSource).toContain("closeSurface");
+    expect(artifactPreviewSource).toContain("scientArtifactSurfaceId(props.artifact)");
+    expect(followerSource).toContain("updateScientArtifact");
+    expect(followerSource).toContain("updateArtifact");
+    expect(followerSource).not.toContain("openScientArtifact");
+    expect(followerSource).not.toContain("openArtifact");
+    expect(followerSource).toContain("events.data?.stale");
   });
 });
