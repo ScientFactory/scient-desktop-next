@@ -6,24 +6,15 @@ import type {
   EnvironmentId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import {
-  CircleAlert,
-  Image as ImageIcon,
-  Info,
-  LoaderCircle,
-  PictureInPicture2,
-  RotateCcw,
-} from "lucide-react";
+import { CircleAlert, Image as ImageIcon, Info, LoaderCircle, RotateCcw } from "lucide-react";
 
 import { useAssetUrlState } from "~/assets/assetUrls";
 import { Button } from "~/components/ui/button";
-import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
-import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
-  openStaticArtifactInPanel,
-  toggleStaticArtifactFloating,
-} from "~/scient/artifacts/staticArtifactViewerActions";
+  StaticArtifactFileActionsMenu,
+  StaticArtifactPresentationMenu,
+} from "~/scient/artifacts/StaticArtifactMenus";
 
 import {
   computeFigurePresentation,
@@ -44,27 +35,14 @@ function ComputeFigure(props: {
   readonly threadRef: ScopedThreadRef;
 }) {
   const asset = useAssetUrlState(props.environmentId, props.presentation.inline.resource);
-  const floated = usePreviewMiniPlayerStore((state) => {
-    const player = selectThreadPreviewMiniPlayer(state.byThreadKey, props.threadRef);
-    return (
-      player?.content.kind === "static-artifact" &&
-      player.content.artifact.surfaceId === props.presentation.viewer.surfaceId
-    );
-  });
-  const open = () => {
-    openStaticArtifactInPanel(props.threadRef, props.presentation.viewer);
-  };
-  const toggleFloating = () => {
-    toggleStaticArtifactFloating(props.threadRef, props.presentation.viewer);
-  };
 
   return (
     <figure className="overflow-hidden rounded-md border border-border/70 bg-card">
-      <button
-        type="button"
-        className="flex min-h-44 w-full items-center justify-center bg-white p-3 outline-none transition hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-ring"
-        onClick={open}
-        aria-label={`Open ${props.presentation.inline.label} in the figure viewer`}
+      <StaticArtifactPresentationMenu
+        artifact={props.presentation.viewer}
+        disabled={asset._tag !== "Success"}
+        threadRef={props.threadRef}
+        triggerClassName="flex min-h-44 w-full cursor-pointer items-center justify-center bg-white p-3 outline-none transition hover:bg-muted/20 focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-default"
       >
         {asset._tag === "Success" ? (
           <img
@@ -82,7 +60,7 @@ function ComputeFigure(props: {
             <ImageIcon className="size-4" /> Figure preview unavailable
           </span>
         )}
-      </button>
+      </StaticArtifactPresentationMenu>
       <figcaption className="flex min-h-9 items-center gap-2 border-t border-border/60 px-3">
         <span className="min-w-0 flex-1 truncate text-xs font-medium">
           {props.presentation.inline.label}
@@ -93,22 +71,11 @@ function ComputeFigure(props: {
             <RotateCcw />
           </Button>
         ) : null}
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                size="icon-xs"
-                variant={floated ? "secondary" : "ghost"}
-                onClick={toggleFloating}
-                aria-label={floated ? "Close floating figure" : "Float figure over the workspace"}
-                aria-pressed={floated}
-              />
-            }
-          >
-            <PictureInPicture2 />
-          </TooltipTrigger>
-          <TooltipPopup>{floated ? "Close floating figure" : "Float figure"}</TooltipPopup>
-        </Tooltip>
+        <StaticArtifactFileActionsMenu
+          assetUrl={asset._tag === "Success" ? asset.url : null}
+          fileName={props.presentation.inline.fileName}
+          threadRef={props.threadRef}
+        />
       </figcaption>
     </figure>
   );

@@ -1,18 +1,18 @@
-import { downloadPresentationBlob } from "../presentation/presentationExport";
 import { copyPngBlobToClipboard } from "../presentation/imageClipboard";
+import { downloadPresentationBlob } from "../presentation/presentationExport";
 
 const MAX_COPY_DIMENSION = 8_192;
 const MAX_COPY_PIXELS = 16_777_216;
 
-export interface InlineImageCopyDimensions {
+export interface StaticImageCopyDimensions {
   readonly height: number;
   readonly width: number;
 }
 
-export function inlineImageCopyDimensions(
+export function staticImageCopyDimensions(
   sourceWidth: number,
   sourceHeight: number,
-): InlineImageCopyDimensions {
+): StaticImageCopyDimensions {
   if (
     !Number.isFinite(sourceWidth) ||
     !Number.isFinite(sourceHeight) ||
@@ -70,7 +70,7 @@ async function loadBlobImage(blob: Blob): Promise<HTMLImageElement> {
 
 async function imageBlobToPng(blob: Blob): Promise<Blob> {
   const image = await loadBlobImage(blob);
-  const dimensions = inlineImageCopyDimensions(image.naturalWidth, image.naturalHeight);
+  const dimensions = staticImageCopyDimensions(image.naturalWidth, image.naturalHeight);
   const canvas = document.createElement("canvas");
   canvas.width = dimensions.width;
   canvas.height = dimensions.height;
@@ -85,12 +85,12 @@ async function imageBlobToPng(blob: Blob): Promise<Blob> {
   });
 }
 
-export async function copyInlineImage(url: string): Promise<void> {
+export async function copyStaticImage(url: string): Promise<void> {
   const source = await fetchImageBlob(url);
   const png = source.type.toLowerCase() === "image/png" ? source : await imageBlobToPng(source);
   await copyPngBlobToClipboard(png);
 }
 
-export async function downloadInlineImage(url: string, fileName: string): Promise<void> {
+export async function downloadStaticImage(url: string, fileName: string): Promise<void> {
   downloadPresentationBlob(await fetchImageBlob(url), fileName);
 }

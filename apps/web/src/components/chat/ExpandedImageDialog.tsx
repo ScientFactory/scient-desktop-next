@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useState } from "react";
 import { ChevronLeftIcon, ChevronRightIcon, CopyIcon, DownloadIcon, XIcon } from "lucide-react";
 import { Button } from "../ui/button";
 import type { ExpandedImagePreview } from "./ExpandedImagePreview";
-import { copyInlineImage, downloadInlineImage } from "~/scient/images/inlineImageActions";
+import { copyStaticImage, downloadStaticImage } from "~/scient/artifacts/staticImageActions";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 
 interface ExpandedImageDialogProps {
@@ -58,10 +58,10 @@ export const ExpandedImageDialog = memo(function ExpandedImageDialog({
     setActionMessage(null);
     try {
       if (action === "copy") {
-        await copyInlineImage(item.src);
+        await copyStaticImage(item.src);
         setActionMessage("Image copied");
       } else {
-        await downloadInlineImage(item.src, item.name);
+        await downloadStaticImage(item.src, item.name);
         setActionMessage("Download started");
       }
     } catch (error) {

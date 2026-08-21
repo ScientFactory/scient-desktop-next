@@ -28,7 +28,7 @@ import { ScientTooltip } from "../presentation/ScientTooltip";
 import { cn } from "~/lib/utils";
 import { useRightPanelStore } from "~/rightPanelStore";
 
-import { copyInlineImage, downloadInlineImage } from "./inlineImageActions";
+import { copyStaticImage, downloadStaticImage } from "../artifacts/staticImageActions";
 import {
   inlineImageFormatLabel,
   inlineWorkspaceImageResource,
@@ -406,7 +406,7 @@ export function ScientInlineWorkspaceImage(props: {
     if (url == null) return;
     runAction(
       "copy-image",
-      () => copyInlineImage(url),
+      () => copyStaticImage(url),
       "Image copied",
       "Unable to copy the image.",
     );
@@ -416,7 +416,7 @@ export function ScientInlineWorkspaceImage(props: {
     if (url == null) return;
     runAction(
       "download",
-      () => downloadInlineImage(url, props.image.fileName),
+      () => downloadStaticImage(url, props.image.fileName),
       null,
       "Unable to download the image.",
     );
