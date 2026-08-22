@@ -9,10 +9,14 @@ import type {
 import { CircleAlert, Image as ImageIcon, Info, LoaderCircle, RotateCcw } from "lucide-react";
 
 import { useAssetUrlState } from "~/assets/assetUrls";
+import {
+  StaticImageCopyButton,
+  StaticImageDownloadButton,
+} from "~/components/preview/StaticImageActionButtons";
 import { Button } from "~/components/ui/button";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
-  StaticArtifactFileActionsMenu,
+  StaticArtifactPresentationActionMenu,
   StaticArtifactPresentationMenu,
 } from "~/scient/artifacts/StaticArtifactMenus";
 
@@ -71,7 +75,16 @@ function ComputeFigure(props: {
             <RotateCcw />
           </Button>
         ) : null}
-        <StaticArtifactFileActionsMenu
+        <StaticArtifactPresentationActionMenu
+          artifact={props.presentation.viewer}
+          disabled={asset._tag !== "Success"}
+          threadRef={props.threadRef}
+        />
+        <StaticImageCopyButton
+          assetUrl={asset._tag === "Success" ? asset.url : null}
+          threadRef={props.threadRef}
+        />
+        <StaticImageDownloadButton
           assetUrl={asset._tag === "Success" ? asset.url : null}
           fileName={props.presentation.inline.fileName}
           threadRef={props.threadRef}

@@ -1,28 +1,51 @@
 "use client";
 
 import type { ScopedThreadRef } from "@t3tools/contracts";
-import {
-  CopyIcon,
-  DownloadIcon,
-  EllipsisIcon,
-  ImageIcon,
-  LoaderCircleIcon,
-  PictureInPicture2Icon,
-} from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { EyeIcon, ImageIcon, PictureInPicture2Icon } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { Button } from "~/components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
-import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
 import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
 
-import { copyStaticImage, downloadStaticImage } from "./staticImageActions";
 import {
   openStaticArtifactInPanel,
   toggleStaticArtifactFloating,
 } from "./staticArtifactViewerActions";
+
+function useStaticArtifactFloating(
+  threadRef: ScopedThreadRef,
+  artifact: PreviewStaticImageSurfaceDescriptor,
+): boolean {
+  return usePreviewMiniPlayerStore((state) => {
+    const player = selectThreadPreviewMiniPlayer(state.byThreadKey, threadRef);
+    return (
+      player?.content.kind === "static-artifact" &&
+      player.content.artifact.surfaceId === artifact.surfaceId
+    );
+  });
+}
+
+function StaticArtifactPresentationItems(props: {
+  readonly artifact: PreviewStaticImageSurfaceDescriptor;
+  readonly floated: boolean;
+  readonly threadRef: ScopedThreadRef;
+}) {
+  return (
+    <>
+      <MenuItem onClick={() => openStaticArtifactInPanel(props.threadRef, props.artifact)}>
+        <ImageIcon />
+        Open in viewer
+      </MenuItem>
+      <MenuItem onClick={() => toggleStaticArtifactFloating(props.threadRef, props.artifact)}>
+        <PictureInPicture2Icon />
+        {props.floated ? "Close floating card" : "Floating card"}
+      </MenuItem>
+    </>
+  );
+}
 
 export function StaticArtifactPresentationMenu(props: {
   readonly artifact: PreviewStaticImageSurfaceDescriptor;
@@ -31,13 +54,7 @@ export function StaticArtifactPresentationMenu(props: {
   readonly threadRef: ScopedThreadRef;
   readonly triggerClassName?: string;
 }) {
-  const floated = usePreviewMiniPlayerStore((state) => {
-    const player = selectThreadPreviewMiniPlayer(state.byThreadKey, props.threadRef);
-    return (
-      player?.content.kind === "static-artifact" &&
-      player.content.artifact.surfaceId === props.artifact.surfaceId
-    );
-  });
+  const floated = useStaticArtifactFloating(props.threadRef, props.artifact);
 
   return (
     <Menu>
@@ -56,70 +73,18 @@ export function StaticArtifactPresentationMenu(props: {
         }
       />
       <MenuPopup align="center" className="min-w-44">
-        <MenuItem onClick={() => openStaticArtifactInPanel(props.threadRef, props.artifact)}>
-          <ImageIcon />
-          Open in viewer
-        </MenuItem>
-        <MenuItem onClick={() => toggleStaticArtifactFloating(props.threadRef, props.artifact)}>
-          <PictureInPicture2Icon />
-          {floated ? "Close floating card" : "Floating card"}
-        </MenuItem>
+        <StaticArtifactPresentationItems {...props} floated={floated} />
       </MenuPopup>
     </Menu>
   );
 }
 
-type StaticArtifactFileAction = "copy" | "download" | null;
-
-export function StaticArtifactFileActionsMenu(props: {
-  readonly assetUrl: string | null;
-  readonly fileName: string;
+export function StaticArtifactPresentationActionMenu(props: {
+  readonly artifact: PreviewStaticImageSurfaceDescriptor;
+  readonly disabled?: boolean;
   readonly threadRef: ScopedThreadRef;
 }) {
-  const [activeAction, setActiveAction] = useState<StaticArtifactFileAction>(null);
-
-  const reportFailure = (action: Exclude<StaticArtifactFileAction, null>, cause: unknown) => {
-    console.error("[scient-artifacts] Static image action failed", action, cause);
-    toastManager.add(
-      stackedThreadToast({
-        type: "error",
-        title: action === "copy" ? "Unable to copy image" : "Unable to download image",
-        description: cause instanceof Error ? cause.message : "The image action failed.",
-        data: { threadRef: props.threadRef },
-      }),
-    );
-  };
-
-  const runAction = async (action: Exclude<StaticArtifactFileAction, null>) => {
-    if (activeAction !== null || props.assetUrl === null) return;
-    setActiveAction(action);
-    try {
-      if (action === "copy") {
-        await copyStaticImage(props.assetUrl);
-        toastManager.add(
-          stackedThreadToast({
-            type: "success",
-            title: "Image copied",
-            timeout: 1_800,
-            data: { threadRef: props.threadRef },
-          }),
-        );
-      } else {
-        await downloadStaticImage(props.assetUrl, props.fileName);
-      }
-    } catch (cause) {
-      reportFailure(action, cause);
-    } finally {
-      setActiveAction(null);
-    }
-  };
-
-  const actionLabel =
-    activeAction === "copy"
-      ? "Copying image…"
-      : activeAction === "download"
-        ? "Preparing download…"
-        : "More figure actions";
+  const floated = useStaticArtifactFloating(props.threadRef, props.artifact);
 
   return (
     <Menu>
@@ -127,12 +92,12 @@ export function StaticArtifactFileActionsMenu(props: {
         <TooltipTrigger
           render={
             <MenuTrigger
-              disabled={props.assetUrl === null || activeAction !== null}
+              disabled={props.disabled}
               render={
                 <Button
-                  aria-label={actionLabel}
-                  data-static-artifact-file-actions
-                  disabled={props.assetUrl === null || activeAction !== null}
+                  aria-label={`Choose how to view ${props.artifact.label}`}
+                  data-static-artifact-presentation-action
+                  disabled={props.disabled}
                   size="icon-xs"
                   type="button"
                   variant="ghost"
@@ -141,25 +106,12 @@ export function StaticArtifactFileActionsMenu(props: {
             />
           }
         >
-          {activeAction === null ? <EllipsisIcon /> : <LoaderCircleIcon className="animate-spin" />}
+          <EyeIcon />
         </TooltipTrigger>
-        <TooltipPopup side="top">{actionLabel}</TooltipPopup>
+        <TooltipPopup side="top">View options</TooltipPopup>
       </Tooltip>
       <MenuPopup align="end" className="min-w-44">
-        <MenuItem
-          disabled={props.assetUrl === null || activeAction !== null}
-          onClick={() => void runAction("copy")}
-        >
-          <CopyIcon />
-          Copy image
-        </MenuItem>
-        <MenuItem
-          disabled={props.assetUrl === null || activeAction !== null}
-          onClick={() => void runAction("download")}
-        >
-          <DownloadIcon />
-          Download original
-        </MenuItem>
+        <StaticArtifactPresentationItems {...props} floated={floated} />
       </MenuPopup>
     </Menu>
   );

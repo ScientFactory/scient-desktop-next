@@ -23,18 +23,4 @@ export function markdownFenceCopySource(
   return `${fence}${info}\n${source.replace(/\n+$/, "")}\n${fence}\n\n`;
 }
 
-export function downloadPresentationBlob(blob: Blob, fileName: string): void {
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.rel = "noopener";
-  anchor.style.display = "none";
-  try {
-    document.body.append(anchor);
-    anchor.click();
-  } finally {
-    anchor.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-  }
-}
+export { downloadBlob as downloadPresentationBlob } from "~/components/preview/staticImageActions";

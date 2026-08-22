@@ -1,6 +1,6 @@
 "use client";
 
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
@@ -11,6 +11,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 
+import { useAssetUrlState } from "~/assets/assetUrls";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { Button } from "~/components/ui/button";
@@ -18,10 +19,12 @@ import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
 import { useRightPanelStore } from "~/rightPanelStore";
 
 import { previewBridge } from "./previewBridge";
 import { StaticAssetImageSurface } from "./StaticAssetImageSurface";
+import { StaticImageCopyButton, StaticImageDownloadButton } from "./StaticImageActionButtons";
 import {
   clampPreviewMiniPlayerPosition,
   clampPreviewMiniPlayerSize,
@@ -121,6 +124,26 @@ const RESIZE_HANDLES: ReadonlyArray<{
 
 interface Props {
   readonly threadRef: ScopedThreadRef;
+}
+
+function FloatingStaticArtifactActions(props: {
+  readonly artifact: PreviewStaticImageSurfaceDescriptor;
+  readonly environmentId: EnvironmentId;
+  readonly threadRef: ScopedThreadRef;
+}) {
+  const asset = useAssetUrlState(props.environmentId, props.artifact.resource);
+  const assetUrl = asset._tag === "Success" ? asset.url : null;
+
+  return (
+    <>
+      <StaticImageCopyButton assetUrl={assetUrl} threadRef={props.threadRef} />
+      <StaticImageDownloadButton
+        assetUrl={assetUrl}
+        fileName={props.artifact.fileName}
+        threadRef={props.threadRef}
+      />
+    </>
+  );
 }
 
 export function ThreadPreviewMiniPlayer({ threadRef }: Props) {
@@ -483,6 +506,13 @@ export function ThreadPreviewMiniPlayer({ threadRef }: Props) {
       >
         <div aria-hidden="true" className="mx-auto h-1 w-8 rounded-full bg-foreground/20" />
         <div className="absolute right-1 top-0.5 flex items-center gap-0.5">
+          {content?.kind === "static-artifact" ? (
+            <FloatingStaticArtifactActions
+              artifact={content.artifact}
+              environmentId={threadRef.environmentId}
+              threadRef={threadRef}
+            />
+          ) : null}
           <Tooltip>
             <TooltipTrigger
               render={

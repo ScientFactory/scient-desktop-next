@@ -24,6 +24,10 @@ const artifactMenusSource = NodeFS.readFileSync(
   NodePath.join(here, "../artifacts/StaticArtifactMenus.tsx"),
   "utf8",
 );
+const imageActionButtonsSource = NodeFS.readFileSync(
+  NodePath.join(here, "../../components/preview/StaticImageActionButtons.tsx"),
+  "utf8",
+);
 const pythonActionsSource = NodeFS.readFileSync(
   NodePath.join(here, "PythonFileComputeActions.tsx"),
   "utf8",
@@ -61,13 +65,15 @@ describe("compute result surface seam", () => {
     expect(panelSource).toContain("allowFigureFollowing={selectedIsCurrentResult}");
     expect(outputSource).toContain("computeFigurePresentation");
     expect(outputSource).toContain("StaticArtifactPresentationMenu");
-    expect(outputSource).toContain("StaticArtifactFileActionsMenu");
+    expect(outputSource).toContain("StaticArtifactPresentationActionMenu");
+    expect(outputSource).toContain("StaticImageCopyButton");
+    expect(outputSource).toContain("StaticImageDownloadButton");
     expect(outputSource).toContain("artifact={props.presentation.viewer}");
     expect(outputSource).toContain('assetUrl={asset._tag === "Success" ? asset.url : null}');
     expect(artifactMenusSource).toContain("Open in viewer");
     expect(artifactMenusSource).toContain("Floating card");
-    expect(artifactMenusSource).toContain("Copy image");
-    expect(artifactMenusSource).toContain("Download original");
+    expect(imageActionButtonsSource).toContain("Copy image");
+    expect(imageActionButtonsSource).toContain("Download original");
     expect(artifactMenusSource).not.toContain("Interactive");
     expect(artifactMenusSource).toContain("toggleStaticArtifactFloating");
     expect(artifactMenusSource).toContain("openStaticArtifactInPanel");

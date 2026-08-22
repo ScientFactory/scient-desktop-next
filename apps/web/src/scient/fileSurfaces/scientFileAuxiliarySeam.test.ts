@@ -54,7 +54,9 @@ describe("Scient file surface seams", () => {
     expect(output).toContain("useAssetUrlState");
     expect(output).toContain("<img");
     expect(output).toContain("StaticArtifactPresentationMenu");
-    expect(output).toContain("StaticArtifactFileActionsMenu");
+    expect(output).toContain("StaticArtifactPresentationActionMenu");
+    expect(output).toContain("StaticImageCopyButton");
+    expect(output).toContain("StaticImageDownloadButton");
     expect(artifactMenus).toContain("openStaticArtifactInPanel");
     expect(artifactMenus).toContain("toggleStaticArtifactFloating");
     expect(artifactActions).toContain("openScientArtifact");

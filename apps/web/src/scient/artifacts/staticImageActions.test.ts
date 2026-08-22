@@ -1,13 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-const downloadState = vi.hoisted(() => ({ calls: [] as Array<{ blob: Blob; fileName: string }> }));
-
-vi.mock("../presentation/presentationExport", () => ({
-  downloadPresentationBlob: (blob: Blob, fileName: string) => {
-    downloadState.calls.push({ blob, fileName });
-  },
-}));
-
 import {
   copyStaticImage,
   downloadStaticImage,
@@ -15,7 +7,6 @@ import {
 } from "./staticImageActions";
 
 afterEach(() => {
-  downloadState.calls = [];
   vi.unstubAllGlobals();
 });
 
@@ -112,11 +103,43 @@ describe("static image byte actions", () => {
 
   it("downloads the unmodified original bytes with the artifact filename", async () => {
     const source = new Blob(["<svg/>"], { type: "image/svg+xml" });
+    const click = vi.fn();
+    const remove = vi.fn();
+    const append = vi.fn();
+    const revokeObjectURL = vi.fn();
+    const anchor = {
+      download: "",
+      href: "",
+      rel: "",
+      style: { display: "" },
+      click,
+      remove,
+    };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, blob: async () => source }));
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:download",
+      revokeObjectURL,
+    });
+    vi.stubGlobal("document", {
+      body: { append },
+      createElement: () => anchor,
+    });
+    vi.stubGlobal("window", {
+      setTimeout: (callback: () => void) => {
+        callback();
+        return 1;
+      },
+    });
 
     await downloadStaticImage("https://environment.test/figure.svg", "figure.svg");
 
-    expect(downloadState.calls).toEqual([{ blob: source, fileName: "figure.svg" }]);
+    expect(anchor.href).toBe("blob:download");
+    expect(anchor.download).toBe("figure.svg");
+    expect(anchor.rel).toBe("noopener");
+    expect(append).toHaveBeenCalledWith(anchor);
+    expect(click).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:download");
   });
 
   it("rejects failed requests and non-image responses", async () => {
