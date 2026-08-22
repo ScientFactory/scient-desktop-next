@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Schema from "effect/Schema";
 import * as SchemaTransformation from "effect/SchemaTransformation";
+import { ComputeLanguageId } from "@scientfactory/compute";
 import { TrimmedNonEmptyString, TrimmedString } from "./baseSchemas.ts";
 import { ThreadEnvMode } from "./environment.ts";
 import {
@@ -621,6 +622,30 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
+/**
+ * Environment-owned preferences for one optional scientific language.
+ *
+ * An empty executable means automatic discovery. These are selection
+ * preferences only: changing them never installs, repairs, licenses, or
+ * mutates a runtime, and never rewrites an existing compute session.
+ */
+export const ScientificComputingLanguageSettings = Schema.Struct({
+  enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  executable: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+});
+export type ScientificComputingLanguageSettings = typeof ScientificComputingLanguageSettings.Type;
+
+export const DEFAULT_SCIENTIFIC_COMPUTING_LANGUAGE_SETTINGS: ScientificComputingLanguageSettings =
+  Schema.decodeSync(ScientificComputingLanguageSettings)({});
+
+export const ScientificComputingSettings = Schema.Struct({
+  schemaVersion: Schema.Literal(1).pipe(Schema.withDecodingDefault(Effect.succeed(1 as const))),
+  languages: Schema.Record(ComputeLanguageId, ScientificComputingLanguageSettings).pipe(
+    Schema.withDecodingDefault(Effect.succeed({})),
+  ),
+}).pipe(Schema.withDecodingDefault(Effect.succeed({})));
+export type ScientificComputingSettings = typeof ScientificComputingSettings.Type;
+
 export const ServerSettings = Schema.Struct({
   // Legacy token-by-token assistant output. Deliberately a fresh key (was
   // `enableAssistantStreaming`): decoding drops the old key, so everyone,
@@ -688,6 +713,7 @@ export const ServerSettings = Schema.Struct({
   sourceControlWriterModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  scientificComputing: ScientificComputingSettings,
 
   // Legacy single-instance-per-driver settings. Continues to be the source
   // of truth until `providerInstances` (below) lands per-driver migration
@@ -883,6 +909,20 @@ export const ServerSettingsPatch = Schema.Struct({
     }),
   ),
   sourceControlWriterModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  scientificComputing: Schema.optionalKey(
+    Schema.Struct({
+      schemaVersion: Schema.optionalKey(Schema.Literal(1)),
+      languages: Schema.optionalKey(
+        Schema.Record(
+          ComputeLanguageId,
+          Schema.Struct({
+            enabled: Schema.optionalKey(Schema.Boolean),
+            executable: Schema.optionalKey(TrimmedString),
+          }),
+        ),
+      ),
+    }),
+  ),
   observability: Schema.optionalKey(
     Schema.Struct({
       otlpTracesUrl: Schema.optionalKey(TrimmedString),

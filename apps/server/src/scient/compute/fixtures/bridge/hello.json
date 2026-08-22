@@ -1,0 +1,14 @@
+{
+  "protocolVersion": 1,
+  "type": "hello",
+  "sessionId": "session-golden",
+  "generation": 1,
+  "requestId": null,
+  "sequence": 0,
+  "payload": {
+    "buildId": "test-build-1",
+    "frameLimit": 16777216,
+    "requiredCapabilities": ["execute", "interrupt", "restart", "shutdown"],
+    "ownerToken": "a]64-char-hex-token-0123456789abcdef0123456789abcdef0123456789abcdef"
+  }
+}

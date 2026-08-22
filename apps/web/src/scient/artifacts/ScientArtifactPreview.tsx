@@ -4,12 +4,18 @@ import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { PictureInPicture2, RefreshCw } from "lucide-react";
 import { useState } from "react";
 
+import { useAssetUrlState } from "~/assets/assetUrls";
 import { Button } from "~/components/ui/button";
 import { StaticAssetImageSurface } from "~/components/preview/StaticAssetImageSurface";
+import {
+  StaticImageCopyButton,
+  StaticImageDownloadButton,
+} from "~/components/preview/StaticImageActionButtons";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
-import { useRightPanelStore } from "~/rightPanelStore";
 import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
+
+import { toggleStaticArtifactFloating } from "./staticArtifactViewerActions";
 
 export function ScientArtifactPreview(props: {
   readonly environmentId: EnvironmentId;
@@ -17,6 +23,8 @@ export function ScientArtifactPreview(props: {
   readonly artifact: PreviewStaticImageSurfaceDescriptor;
 }) {
   const [refreshToken, setRefreshToken] = useState(0);
+  const asset = useAssetUrlState(props.environmentId, props.artifact.resource);
+  const assetUrl = asset._tag === "Success" ? asset.url : null;
   const miniPlayer = usePreviewMiniPlayerStore((state) =>
     selectThreadPreviewMiniPlayer(state.byThreadKey, props.threadRef),
   );
@@ -25,12 +33,7 @@ export function ScientArtifactPreview(props: {
     miniPlayer.content.artifact.surfaceId === props.artifact.surfaceId;
 
   const toggleFloating = () => {
-    if (floated) {
-      usePreviewMiniPlayerStore.getState().close(props.threadRef);
-      return;
-    }
-    usePreviewMiniPlayerStore.getState().openArtifact(props.threadRef, props.artifact);
-    useRightPanelStore.getState().close(props.threadRef);
+    toggleStaticArtifactFloating(props.threadRef, props.artifact);
   };
 
   return (
@@ -39,6 +42,12 @@ export function ScientArtifactPreview(props: {
         <span className="min-w-0 flex-1 truncate px-1 text-xs text-muted-foreground">
           {props.artifact.fileName}
         </span>
+        <StaticImageCopyButton assetUrl={assetUrl} threadRef={props.threadRef} />
+        <StaticImageDownloadButton
+          assetUrl={assetUrl}
+          fileName={props.artifact.fileName}
+          threadRef={props.threadRef}
+        />
         <Tooltip>
           <TooltipTrigger
             render={

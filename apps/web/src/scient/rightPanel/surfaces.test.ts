@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   normalizeScientRightPanelSurface,
   scientArtifactSurface,
+  scientComputeSurface,
   scientEnvironmentFileSurface,
   scientRightPanelSurfaceTitle,
   scientSourcePdfSurface,
@@ -46,6 +47,31 @@ describe("Scient right-panel surfaces", () => {
       attachmentId: "pdf 1",
       fileName: "Paper.pdf",
     });
+  });
+
+  it("keeps one stable Compute surface per project root", () => {
+    expect(scientComputeSurface({ cwd: "/research/Study 1" })).toEqual({
+      id: "scient:compute:%2Fresearch%2FStudy%201",
+      kind: "scient",
+      module: "compute",
+      cwd: "/research/Study 1",
+    });
+    expect(
+      normalizeScientRightPanelSurface({
+        id: "stale-compute-id",
+        kind: "scient",
+        module: "compute",
+        cwd: "/research/Study 1",
+      }),
+    ).toEqual(scientComputeSurface({ cwd: "/research/Study 1" }));
+    expect(
+      normalizeScientRightPanelSurface({
+        id: "scient:compute:unsafe",
+        kind: "scient",
+        module: "compute",
+        cwd: "/research/Study\0bad",
+      }),
+    ).toBeNull();
   });
 
   it("normalizes recognized persisted descriptors and rejects unsafe ones", () => {
@@ -109,6 +135,7 @@ describe("Scient right-panel surfaces", () => {
 
   it("keeps user-visible titles inside the Scient-owned registry", () => {
     expect(scientRightPanelSurfaceTitle(scientSourcesSurface())).toBe("Sources");
+    expect(scientRightPanelSurfaceTitle(scientComputeSurface({ cwd: "/project" }))).toBe("Compute");
     expect(
       scientRightPanelSurfaceTitle(
         scientSourcePdfSurface({

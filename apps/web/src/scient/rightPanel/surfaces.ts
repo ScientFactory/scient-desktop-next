@@ -6,6 +6,12 @@ import {
 export type ScientRightPanelSurface =
   | { readonly id: "scient:sources"; readonly kind: "scient"; readonly module: "sources" }
   | {
+      readonly id: `scient:compute:${string}`;
+      readonly kind: "scient";
+      readonly module: "compute";
+      readonly cwd: string;
+    }
+  | {
       readonly id: `scient:source-pdf:${string}`;
       readonly kind: "scient";
       readonly module: "source-pdf";
@@ -29,6 +35,17 @@ export type ScientRightPanelSurface =
 
 export function scientSourcesSurface(): Extract<ScientRightPanelSurface, { module: "sources" }> {
   return { id: "scient:sources", kind: "scient", module: "sources" };
+}
+
+export function scientComputeSurface(input: {
+  readonly cwd: string;
+}): Extract<ScientRightPanelSurface, { module: "compute" }> {
+  return {
+    id: `scient:compute:${encodeURIComponent(input.cwd)}`,
+    kind: "scient",
+    module: "compute",
+    cwd: input.cwd,
+  };
 }
 
 export function scientSourcePdfSurface(input: {
@@ -87,6 +104,15 @@ export function normalizeScientRightPanelSurface(value: unknown): ScientRightPan
     return scientSourcesSurface();
   }
   if (
+    surface.module === "compute" &&
+    typeof surface.cwd === "string" &&
+    surface.cwd.length > 0 &&
+    surface.cwd.length <= 4_096 &&
+    !surface.cwd.includes("\0")
+  ) {
+    return scientComputeSurface({ cwd: surface.cwd });
+  }
+  if (
     surface.module === "source-pdf" &&
     typeof surface.sourceId === "string" &&
     surface.sourceId.length > 0 &&
@@ -123,6 +149,8 @@ export function scientRightPanelSurfaceTitle(surface: ScientRightPanelSurface): 
   switch (surface.module) {
     case "sources":
       return "Sources";
+    case "compute":
+      return "Compute";
     case "source-pdf":
       return surface.fileName;
     case "artifact":

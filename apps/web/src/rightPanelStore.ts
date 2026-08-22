@@ -19,7 +19,7 @@ import {
   type ScientRightPanelSurface,
 } from "./scient/rightPanel/surfaces";
 import {
-  previewStaticImageRevisionKey,
+  previewStaticImageDescriptorKey,
   type PreviewStaticImageSurfaceDescriptor,
 } from "./previewStaticImageSurface";
 
@@ -454,11 +454,8 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
               return current;
             }
             if (
-              existing.artifact.label === artifact.label &&
-              existing.artifact.fileName === artifact.fileName &&
-              existing.artifact.mediaType === artifact.mediaType &&
-              previewStaticImageRevisionKey(existing.artifact) ===
-                previewStaticImageRevisionKey(artifact)
+              previewStaticImageDescriptorKey(existing.artifact) ===
+              previewStaticImageDescriptorKey(artifact)
             ) {
               return current;
             }

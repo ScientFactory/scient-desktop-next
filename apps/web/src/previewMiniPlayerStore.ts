@@ -3,7 +3,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 import { create } from "zustand";
 
 import {
-  previewStaticImageRevisionKey,
+  previewStaticImageDescriptorKey,
   type PreviewStaticImageSurfaceDescriptor,
 } from "./previewStaticImageSurface";
 
@@ -71,13 +71,7 @@ function artifactEquals(
   left: PreviewStaticImageSurfaceDescriptor,
   right: PreviewStaticImageSurfaceDescriptor,
 ): boolean {
-  return (
-    left.surfaceId === right.surfaceId &&
-    left.label === right.label &&
-    left.fileName === right.fileName &&
-    left.mediaType === right.mediaType &&
-    previewStaticImageRevisionKey(left) === previewStaticImageRevisionKey(right)
-  );
+  return previewStaticImageDescriptorKey(left) === previewStaticImageDescriptorKey(right);
 }
 
 function openContent(

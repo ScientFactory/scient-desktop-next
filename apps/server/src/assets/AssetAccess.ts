@@ -4,10 +4,12 @@ import {
   ArtifactRevisionId,
 } from "@scientfactory/document-artifacts";
 import { AnalysisArtifactResourceRef } from "@scientfactory/analysis";
+import { ComputeOutputResourceRef } from "@scientfactory/compute";
 import type { AssetResource } from "@t3tools/contracts";
 import {
   AssetAnalysisArtifactNotFoundError,
   AssetAttachmentNotFoundError,
+  AssetComputeOutputNotFoundError,
   AssetEnvironmentFileInspectionError,
   AssetEnvironmentFileNotFoundError,
   AssetEnvironmentFilePathValidationError,
@@ -55,6 +57,7 @@ import * as ServerConfig from "../config.ts";
 import * as ProjectFaviconResolver from "../project/ProjectFaviconResolver.ts";
 import type { ResolvedGeneratedDocumentRevision } from "../scient/documentArtifacts/GeneratedDocumentStore.ts";
 import type { ResolvedAnalysisArtifactRepresentation } from "../scient/analysis/LocalAnalysisStore.ts";
+import type { ResolvedComputeOutputImage } from "../scient/compute/LocalComputeStore.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import { ASSET_TOKEN_TTL_MS } from "../scient/documentArtifacts/AssetLifetime.ts";
 
@@ -123,6 +126,16 @@ const AssetClaimsSchema = Schema.Union([
     version: Schema.Literal(1),
     kind: Schema.Literal("analysis-artifact"),
     ...AnalysisArtifactResourceRef.fields,
+    path: Schema.String,
+    fileName: Schema.String,
+    expiresAt: Schema.Number,
+    revisionSize: Schema.Number,
+    revisionMtimeMs: Schema.NullOr(Schema.Number),
+  }),
+  Schema.Struct({
+    version: Schema.Literal(1),
+    kind: Schema.Literal("compute-output"),
+    ...ComputeOutputResourceRef.fields,
     path: Schema.String,
     fileName: Schema.String,
     expiresAt: Schema.Number,
@@ -290,6 +303,7 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   /** Must match the durable lease returned with `generatedDocument`. */
   readonly generatedDocumentExpiresAtEpochMs?: number;
   readonly analysisArtifact?: ResolvedAnalysisArtifactRepresentation;
+  readonly computeOutput?: ResolvedComputeOutputImage;
 }) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -611,6 +625,47 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
       fileName = resolved.representation.fileName;
       break;
     }
+    case "compute-output": {
+      const resolved = input.computeOutput;
+      // The hash is the identity, so a resolution for a different image is not
+      // a near miss to be tolerated: it is the wrong image.
+      if (!resolved || resolved.contentHash !== input.resource.contentHash) {
+        return yield* new AssetComputeOutputNotFoundError({ resource: input.resource });
+      }
+      const config = yield* ServerConfig.ServerConfig;
+      const [canonicalComputeRoot, canonicalOutputPath] = yield* Effect.all([
+        fileSystem.realPath(config.computeDir),
+        fileSystem.realPath(resolved.path),
+      ]).pipe(
+        Effect.mapError(() => new AssetComputeOutputNotFoundError({ resource: input.resource })),
+      );
+      // Re-established here rather than trusted from the store. This is the
+      // last place a path becomes a signed URL, so containment is checked where
+      // the consequence is, not only where the path was produced.
+      const computeRelativePath = path.relative(canonicalComputeRoot, canonicalOutputPath);
+      if (
+        computeRelativePath === "" ||
+        computeRelativePath.startsWith("..") ||
+        path.isAbsolute(computeRelativePath)
+      ) {
+        return yield* new AssetComputeOutputNotFoundError({ resource: input.resource });
+      }
+      claims = {
+        version: 1,
+        kind: "compute-output",
+        projectId: input.resource.projectId,
+        sessionId: input.resource.sessionId,
+        executionId: input.resource.executionId,
+        contentHash: input.resource.contentHash,
+        path: canonicalOutputPath,
+        fileName: resolved.fileName,
+        expiresAt,
+        revisionSize: resolved.revision.size,
+        revisionMtimeMs: resolved.revision.mtimeMs,
+      };
+      fileName = resolved.fileName;
+      break;
+    }
     case "environment-file": {
       if (!path.isAbsolute(input.resource.path)) {
         return yield* new AssetEnvironmentFilePathValidationError({
@@ -768,6 +823,19 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
   }
 
   if (claims.kind === "analysis-artifact") {
+    const decodedPath = decodeRelativePath(relativePath);
+    if (decodedPath === null || decodedPath !== claims.fileName) return null;
+    return {
+      kind: "file",
+      path: claims.path,
+      revision: {
+        size: claims.revisionSize,
+        mtimeMs: claims.revisionMtimeMs,
+      },
+    } satisfies ResolvedAsset;
+  }
+
+  if (claims.kind === "compute-output") {
     const decodedPath = decodeRelativePath(relativePath);
     if (decodedPath === null || decodedPath !== claims.fileName) return null;
     return {

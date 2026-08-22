@@ -9,6 +9,7 @@ describe("previewImageSourceIdentity", () => {
         url: "http://127.0.0.1/assets/renewed-token",
         alt: "Figure",
         revisionKey: "analysis-run:42:figure-1",
+        loadKey: "retry-2",
       }),
     ).toBe("analysis-run:42:figure-1");
   });

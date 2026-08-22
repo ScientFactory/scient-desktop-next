@@ -1,10 +1,17 @@
 "use client";
 
-import type { ScopedThreadRef } from "@t3tools/contracts";
+import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 import { PanelRightIcon, PictureInPicture2, XIcon } from "lucide-react";
-import { type PointerEvent as ReactPointerEvent, useEffect, useLayoutEffect, useRef } from "react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { createPortal } from "react-dom";
 
+import { useAssetUrlState } from "~/assets/assetUrls";
 import { BrowserSurfaceSlot } from "~/browser/BrowserSurfaceSlot";
 import { previewRuntimeTabId } from "~/browser/previewRuntimeTabId";
 import { Button } from "~/components/ui/button";
@@ -12,18 +19,42 @@ import { toastManager } from "~/components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useThreadPreviewState } from "~/previewStateStore";
 import { selectThreadPreviewMiniPlayer, usePreviewMiniPlayerStore } from "~/previewMiniPlayerStore";
+import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
 import { useRightPanelStore } from "~/rightPanelStore";
 
 import { previewBridge } from "./previewBridge";
 import { StaticAssetImageSurface } from "./StaticAssetImageSurface";
+import { StaticImageCopyButton, StaticImageDownloadButton } from "./StaticImageActionButtons";
 import {
   clampPreviewMiniPlayerPosition,
   clampPreviewMiniPlayerSize,
+  keyboardNudgePreviewMiniPlayerPosition,
+  keyboardResizePreviewMiniPlayerFromHandle,
   PREVIEW_MINI_PLAYER_DEFAULT_SIZE,
   type PreviewMiniPlayerResizeDirection,
   resizePreviewMiniPlayerRect,
   resolvePreviewMiniPlayerDefaultPosition,
 } from "./previewMiniPlayerLayout";
+
+const KEYBOARD_MOVE_STEP = 8;
+const KEYBOARD_MOVE_LARGE_STEP = 80;
+const KEYBOARD_RESIZE_STEP = 12;
+const KEYBOARD_RESIZE_LARGE_STEP = 60;
+
+function keyboardDirection(key: string): "left" | "right" | "up" | "down" | null {
+  switch (key) {
+    case "ArrowLeft":
+      return "left";
+    case "ArrowRight":
+      return "right";
+    case "ArrowUp":
+      return "up";
+    case "ArrowDown":
+      return "down";
+    default:
+      return null;
+  }
+}
 
 interface DragState {
   readonly pointerId: number;
@@ -93,6 +124,26 @@ const RESIZE_HANDLES: ReadonlyArray<{
 
 interface Props {
   readonly threadRef: ScopedThreadRef;
+}
+
+function FloatingStaticArtifactActions(props: {
+  readonly artifact: PreviewStaticImageSurfaceDescriptor;
+  readonly environmentId: EnvironmentId;
+  readonly threadRef: ScopedThreadRef;
+}) {
+  const asset = useAssetUrlState(props.environmentId, props.artifact.resource);
+  const assetUrl = asset._tag === "Success" ? asset.url : null;
+
+  return (
+    <>
+      <StaticImageCopyButton assetUrl={assetUrl} threadRef={props.threadRef} />
+      <StaticImageDownloadButton
+        assetUrl={assetUrl}
+        fileName={props.artifact.fileName}
+        threadRef={props.threadRef}
+      />
+    </>
+  );
 }
 
 export function ThreadPreviewMiniPlayer({ threadRef }: Props) {
@@ -341,6 +392,75 @@ export function ThreadPreviewMiniPlayer({ threadRef }: Props) {
     }
   };
 
+  const handleTitleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.target !== event.currentTarget) return;
+    const direction = keyboardDirection(event.key);
+    if (direction === null) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    flushDragPosition();
+    const root = rootRef.current;
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    const store = usePreviewMiniPlayerStore.getState();
+    const current = selectThreadPreviewMiniPlayer(store.byThreadKey, threadRef);
+    if (current?.content.id !== contentId) return;
+    const rootRect = root?.getBoundingClientRect();
+    const fallbackPosition = resolvePreviewMiniPlayerDefaultPosition(viewport, size);
+    const playerSize = clampPreviewMiniPlayerSize(
+      { width: root?.offsetWidth ?? size.width, height: root?.offsetHeight ?? size.height },
+      viewport,
+    );
+    const next = keyboardNudgePreviewMiniPlayerPosition(
+      current.position ?? {
+        x: rootRect?.left ?? fallbackPosition.x,
+        y: rootRect?.top ?? fallbackPosition.y,
+      },
+      direction,
+      event.shiftKey ? KEYBOARD_MOVE_LARGE_STEP : KEYBOARD_MOVE_STEP,
+      viewport,
+      playerSize,
+    );
+    store.move(threadRef, contentId, next);
+  };
+
+  const handleResizeKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+    handleDirection: PreviewMiniPlayerResizeDirection,
+  ) => {
+    const direction = keyboardDirection(event.key);
+    if (direction === null) return;
+
+    const root = rootRef.current;
+    if (!root) return;
+    const store = usePreviewMiniPlayerStore.getState();
+    const current = selectThreadPreviewMiniPlayer(store.byThreadKey, threadRef);
+    if (current?.content.id !== contentId) return;
+    flushResizeRect();
+    event.preventDefault();
+    event.stopPropagation();
+    const rootRect = root.getBoundingClientRect();
+    const next = keyboardResizePreviewMiniPlayerFromHandle(
+      {
+        position: { x: rootRect.left, y: rootRect.top },
+        size: { width: root.offsetWidth, height: root.offsetHeight },
+      },
+      handleDirection,
+      direction,
+      event.shiftKey ? KEYBOARD_RESIZE_LARGE_STEP : KEYBOARD_RESIZE_STEP,
+      { width: window.innerWidth, height: window.innerHeight },
+    );
+    if (next === null) return;
+    store.setRect(threadRef, contentId, next);
+  };
+
+  const handleCardKeyDownCapture = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    close();
+  };
+
   if (
     !miniPlayer ||
     !content ||
@@ -360,6 +480,7 @@ export function ThreadPreviewMiniPlayer({ threadRef }: Props) {
       aria-label="Floating preview"
       data-preview-mini-player={content.id}
       className="pointer-events-none fixed z-[29] select-none"
+      onKeyDownCapture={handleCardKeyDownCapture}
       style={
         position
           ? { left: position.x, top: position.y, width: size.width, height: size.height }
@@ -372,15 +493,26 @@ export function ThreadPreviewMiniPlayer({ threadRef }: Props) {
       }
     >
       <div
-        className="group pointer-events-auto absolute inset-x-0 top-0 z-[34] flex h-7 touch-none cursor-grab items-center rounded-t-xl border-b border-border/60 bg-popover/95 px-2 active:cursor-grabbing"
+        className="group pointer-events-auto absolute inset-x-0 top-0 z-[34] flex h-7 touch-none cursor-grab items-center rounded-t-xl border-b border-border/60 bg-popover/95 px-2 outline-none focus-visible:ring-2 focus-visible:ring-ring/60 active:cursor-grabbing"
+        role="toolbar"
+        tabIndex={0}
+        aria-label="Floating preview controls. Use arrow keys to move."
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onLostPointerCapture={endDrag}
+        onKeyDown={handleTitleKeyDown}
       >
         <div aria-hidden="true" className="mx-auto h-1 w-8 rounded-full bg-foreground/20" />
         <div className="absolute right-1 top-0.5 flex items-center gap-0.5">
+          {content?.kind === "static-artifact" ? (
+            <FloatingStaticArtifactActions
+              artifact={content.artifact}
+              environmentId={threadRef.environmentId}
+              threadRef={threadRef}
+            />
+          ) : null}
           <Tooltip>
             <TooltipTrigger
               render={
@@ -483,11 +615,13 @@ export function ThreadPreviewMiniPlayer({ threadRef }: Props) {
                 <button
                   type="button"
                   aria-label={`Resize floating preview from ${handle.label}`}
-                  className={`pointer-events-auto absolute z-[35] touch-none ${handle.className}`}
+                  className={`pointer-events-auto absolute z-[35] touch-none focus-visible:z-[36] focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/60 ${handle.className}`}
                   onPointerDown={(event) => handleResizePointerDown(event, handle.direction)}
                   onPointerMove={handleResizePointerMove}
                   onPointerUp={endResize}
                   onPointerCancel={endResize}
+                  onLostPointerCapture={endResize}
+                  onKeyDown={(event) => handleResizeKeyDown(event, handle.direction)}
                 />
               }
             />

@@ -1,17 +1,18 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useReducer, useRef, useState } from "react";
 
 import { cn } from "~/lib/utils";
 
 import { nextPreviewImageZoom } from "./previewImageZoom";
+import {
+  initialPreviewImageTransitionState,
+  previewImageSourceToken,
+  reducePreviewImageTransition,
+  type PreviewImageSource,
+} from "./previewImageTransition";
 
-export interface PreviewImageSource {
-  readonly url: string;
-  readonly alt: string;
-  /** Stable content identity. URL-only callers still reset when their source changes. */
-  readonly revisionKey?: string;
-}
+export type { PreviewImageSource } from "./previewImageTransition";
 
 interface ImageZoomAnchor {
   readonly contentX: number;
@@ -31,10 +32,12 @@ export function PreviewImageSurface({
   source,
   className,
   onLoadError,
+  statusLabel,
 }: {
   readonly source: PreviewImageSource;
   readonly className?: string;
   readonly onLoadError?: () => void;
+  readonly statusLabel?: string;
 }) {
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const zoomFrameRef = useRef<number | null>(null);
@@ -46,8 +49,14 @@ export function PreviewImageSurface({
   const zoomRef = useRef(1);
   const [zoom, setZoom] = useState(1);
   const [showZoomHint, setShowZoomHint] = useState(false);
-  const [loadState, setLoadState] = useState<"loading" | "loaded" | "failed">("loading");
-  const sourceIdentity = previewImageSourceIdentity(source);
+  const [imageState, dispatchImage] = useReducer(
+    reducePreviewImageTransition,
+    source,
+    initialPreviewImageTransitionState,
+  );
+  const displayedIdentity = imageState.displayed
+    ? previewImageSourceIdentity(imageState.displayed)
+    : null;
 
   const dismissZoomHint = () => {
     if (zoomHintTimerRef.current !== null) {
@@ -76,11 +85,11 @@ export function PreviewImageSurface({
     zoomRef.current = 1;
     setZoom(1);
     viewportRef.current?.scrollTo({ left: 0, top: 0 });
-  }, [sourceIdentity]);
+  }, [displayedIdentity]);
 
   useEffect(() => {
-    setLoadState("loading");
-  }, [source.url]);
+    dispatchImage({ _tag: "source", source });
+  }, [source]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -130,8 +139,8 @@ export function PreviewImageSurface({
     viewport.scrollTop = anchor.contentY * zoom - anchor.localY;
   }, [zoom]);
 
-  const handleLoad = () => {
-    setLoadState("loaded");
+  const handleLoad = (loaded: PreviewImageSource) => {
+    dispatchImage({ _tag: "loaded", token: previewImageSourceToken(loaded) });
     if (zoomHintShownRef.current) return;
     zoomHintShownRef.current = true;
     setShowZoomHint(true);
@@ -154,24 +163,48 @@ export function PreviewImageSurface({
         className="relative shrink-0 bg-background"
         style={{ width: `${zoom * 100}%`, height: `${zoom * 100}%` }}
       >
-        <img
-          key={source.url}
-          src={source.url}
-          alt={source.alt}
-          crossOrigin="anonymous"
-          draggable={false}
-          className={`absolute inset-0 size-full select-none object-contain transition-opacity duration-100 ${loadState === "loaded" ? "opacity-100" : "opacity-0"}`}
-          onLoad={handleLoad}
-          onError={() => {
-            dismissZoomHint();
-            setLoadState("failed");
-            onLoadError?.();
-          }}
-        />
+        {imageState.displayed ? (
+          <img
+            key={previewImageSourceToken(imageState.displayed)}
+            src={imageState.displayed.url}
+            alt={imageState.displayed.alt}
+            crossOrigin="anonymous"
+            draggable={false}
+            className="absolute inset-0 size-full select-none object-contain"
+          />
+        ) : null}
+        {imageState.pending ? (
+          <img
+            key={previewImageSourceToken(imageState.pending)}
+            src={imageState.pending.url}
+            alt=""
+            aria-hidden="true"
+            crossOrigin="anonymous"
+            draggable={false}
+            className="pointer-events-none absolute inset-0 size-full select-none object-contain opacity-0"
+            onLoad={() => {
+              if (imageState.pending) handleLoad(imageState.pending);
+            }}
+            onError={() => {
+              if (!imageState.pending) return;
+              dismissZoomHint();
+              dispatchImage({
+                _tag: "failed",
+                token: previewImageSourceToken(imageState.pending),
+              });
+              onLoadError?.();
+            }}
+          />
+        ) : null}
       </div>
-      {loadState !== "loaded" ? (
+      {!imageState.displayed ? (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center bg-background text-xs text-muted-foreground">
-          {loadState === "failed" ? "Unable to load figure" : "Loading figure…"}
+          {imageState.failed ? "Unable to load figure" : "Loading figure…"}
+        </div>
+      ) : null}
+      {statusLabel ? (
+        <div className="pointer-events-none absolute left-3 top-3 rounded-md border border-border/70 bg-popover/90 px-2 py-1 text-[11px] text-muted-foreground shadow-sm">
+          {statusLabel}
         </div>
       ) : null}
       <div

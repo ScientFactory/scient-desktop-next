@@ -170,6 +170,7 @@ import * as ResourceTelemetry from "./resourceTelemetry/ResourceTelemetry.ts";
 import * as UsageService from "./usage/UsageService.ts";
 import * as Data from "effect/Data";
 import { registerAnalysisRpcTests } from "./scient/analysis/AnalysisRpcServerTests.ts";
+import { registerComputeRpcTests } from "./scient/compute/ComputeRpcServerTests.ts";
 
 import { makeOrchestrationIntegrationHarness } from "../integration/OrchestrationEngineHarness.integration.ts";
 import {
@@ -1421,7 +1422,7 @@ const getWsServerUrl = (
   });
 
 // Keep Scient-owned integration cases on the exact inherited server harness.
-export type AnalysisRpcServerTestHarness = {
+export type ScientRpcServerTestHarness = {
   readonly buildAppUnderTest: typeof buildAppUnderTest;
   readonly fetchEffect: typeof fetchEffect;
   readonly getHttpServerUrl: typeof getHttpServerUrl;
@@ -5119,13 +5120,15 @@ it.layer(NodeServices.layer)("server router seam", (it) => {
     }).pipe(Effect.provide(NodeHttpServer.layerTest), TestClock.withLive),
   );
 
-  registerAnalysisRpcTests(it, {
+  const scientRpcHarness = {
     buildAppUnderTest,
     fetchEffect,
     getHttpServerUrl,
     getWsServerUrl,
     withWsRpcClient,
-  });
+  };
+  registerAnalysisRpcTests(it, scientRpcHarness);
+  registerComputeRpcTests(it, scientRpcHarness);
 
   it.effect("creates a missing workspace root during websocket project.create dispatch", () =>
     Effect.gen(function* () {

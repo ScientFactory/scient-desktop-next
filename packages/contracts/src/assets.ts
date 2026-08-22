@@ -4,6 +4,7 @@ import {
   ArtifactRevisionId,
 } from "@scientfactory/document-artifacts";
 import { AnalysisArtifactResourceRef } from "@scientfactory/analysis";
+import { ComputeOutputResourceRef } from "@scientfactory/compute";
 import * as Schema from "effect/Schema";
 
 import { ThreadId, TrimmedNonEmptyString } from "./baseSchemas.ts";
@@ -63,6 +64,12 @@ export const AssetResource = Schema.Union([
   }),
   Schema.TaggedStruct("analysis-artifact", {
     ...AnalysisArtifactResourceRef.fields,
+  }),
+  // An image a compute session produced. Addressed by content hash rather than
+  // by position in a transcript, so a reference stays valid however the
+  // transcript around it is later read, trimmed, or re-rendered.
+  Schema.TaggedStruct("compute-output", {
+    ...ComputeOutputResourceRef.fields,
   }),
   Schema.TaggedStruct("environment-file", {
     path: EnvironmentFilePath,
@@ -284,6 +291,29 @@ export class AssetAnalysisArtifactResolutionError extends Schema.TaggedErrorClas
   }
 }
 
+export class AssetComputeOutputNotFoundError extends Schema.TaggedErrorClass<AssetComputeOutputNotFoundError>()(
+  "AssetComputeOutputNotFoundError",
+  {
+    resource: AssetResource,
+  },
+) {
+  override get message(): string {
+    return "Compute output was not found.";
+  }
+}
+
+export class AssetComputeOutputResolutionError extends Schema.TaggedErrorClass<AssetComputeOutputResolutionError>()(
+  "AssetComputeOutputResolutionError",
+  {
+    resource: AssetResource,
+    cause: Schema.Defect(),
+  },
+) {
+  override get message(): string {
+    return "Failed to resolve compute output.";
+  }
+}
+
 export class AssetSigningKeyLoadError extends Schema.TaggedErrorClass<AssetSigningKeyLoadError>()(
   "AssetSigningKeyLoadError",
   {
@@ -348,6 +378,8 @@ export const AssetAccessError = Schema.Union([
   AssetGeneratedDocumentResolutionError,
   AssetAnalysisArtifactNotFoundError,
   AssetAnalysisArtifactResolutionError,
+  AssetComputeOutputNotFoundError,
+  AssetComputeOutputResolutionError,
   AssetEnvironmentFilePathValidationError,
   AssetEnvironmentFileInspectionError,
   AssetEnvironmentFileNotFoundError,

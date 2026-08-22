@@ -32,6 +32,15 @@ export interface ServerDerivedPaths {
   readonly settingsPath: string;
   readonly providerStatusCacheDir: string;
   readonly analysisDir: string;
+  /**
+   * Where compute sessions keep their durable record.
+   *
+   * Separate from `analysisDir` because the two have different lifetimes: an
+   * analysis run is a finished artifact, while a compute session is a namespace
+   * a user may hold open for days and whose history has to survive the process
+   * that served it.
+   */
+  readonly computeDir: string;
   readonly latexDir: string;
   readonly worktreesDir: string;
   readonly attachmentsDir: string;
@@ -127,6 +136,7 @@ export const deriveServerPaths = Effect.fn(function* (
     settingsPath: join(stateDir, "settings.json"),
     providerStatusCacheDir,
     analysisDir: join(stateDir, "analysis"),
+    computeDir: join(stateDir, "compute"),
     latexDir: join(stateDir, "latex"),
     worktreesDir: join(baseDir, "worktrees"),
     attachmentsDir,
@@ -161,6 +171,7 @@ export const ensureServerDirectories = Effect.fn(function* (derivedPaths: Server
       fs.makeDirectory(path.dirname(derivedPaths.settingsPath), { recursive: true }),
       fs.makeDirectory(derivedPaths.providerStatusCacheDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.analysisDir, { recursive: true }),
+      fs.makeDirectory(derivedPaths.computeDir, { recursive: true }),
       fs.makeDirectory(derivedPaths.latexDir, { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.anonymousIdPath), { recursive: true }),
       fs.makeDirectory(path.dirname(derivedPaths.serverRuntimeStatePath), { recursive: true }),

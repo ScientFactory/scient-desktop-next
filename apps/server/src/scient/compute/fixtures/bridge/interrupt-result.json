@@ -1,0 +1,11 @@
+{
+  "protocolVersion": 1,
+  "type": "interrupt-result",
+  "sessionId": "session-golden",
+  "generation": 1,
+  "requestId": "request-1",
+  "sequence": 4,
+  "payload": {
+    "result": "interrupted"
+  }
+}

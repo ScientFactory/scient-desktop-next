@@ -1,46 +1,37 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
-const downloadState = vi.hoisted(() => ({ calls: [] as Array<{ blob: Blob; fileName: string }> }));
-
-vi.mock("../presentation/presentationExport", () => ({
-  downloadPresentationBlob: (blob: Blob, fileName: string) => {
-    downloadState.calls.push({ blob, fileName });
-  },
-}));
-
 import {
-  copyInlineImage,
-  downloadInlineImage,
-  inlineImageCopyDimensions,
-} from "./inlineImageActions";
+  copyStaticImage,
+  downloadStaticImage,
+  staticImageCopyDimensions,
+} from "./staticImageActions";
 
 afterEach(() => {
-  downloadState.calls = [];
   vi.unstubAllGlobals();
 });
 
-describe("inline image copy dimensions", () => {
+describe("static image copy dimensions", () => {
   it("preserves ordinary image dimensions", () => {
-    expect(inlineImageCopyDimensions(1_200, 800)).toEqual({ width: 1_200, height: 800 });
+    expect(staticImageCopyDimensions(1_200, 800)).toEqual({ width: 1_200, height: 800 });
   });
 
   it("bounds extremely large images by dimension and pixel count", () => {
-    const wide = inlineImageCopyDimensions(20_000, 2_000);
+    const wide = staticImageCopyDimensions(20_000, 2_000);
     expect(wide.width).toBe(8_192);
     expect(wide.height).toBe(819);
 
-    const square = inlineImageCopyDimensions(10_000, 10_000);
+    const square = staticImageCopyDimensions(10_000, 10_000);
     expect(square.width * square.height).toBeLessThanOrEqual(16_777_216);
     expect(square.width).toBe(square.height);
   });
 
   it("rejects absent and invalid intrinsic dimensions", () => {
-    expect(() => inlineImageCopyDimensions(0, 100)).toThrow(/usable dimensions/u);
-    expect(() => inlineImageCopyDimensions(Number.NaN, 100)).toThrow(/usable dimensions/u);
+    expect(() => staticImageCopyDimensions(0, 100)).toThrow(/usable dimensions/u);
+    expect(() => staticImageCopyDimensions(Number.NaN, 100)).toThrow(/usable dimensions/u);
   });
 });
 
-describe("inline image byte actions", () => {
+describe("static image byte actions", () => {
   it("copies an existing PNG without re-encoding it", async () => {
     const source = new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" });
     const write = vi.fn().mockResolvedValue(undefined);
@@ -53,7 +44,7 @@ describe("inline image byte actions", () => {
     vi.stubGlobal("navigator", { clipboard: { write } });
     vi.stubGlobal("ClipboardItem", TestClipboardItem);
 
-    await copyInlineImage("https://environment.test/figure.png");
+    await copyStaticImage("https://environment.test/figure.png");
 
     expect(items).toEqual([{ "image/png": source }]);
     expect(write).toHaveBeenCalledTimes(1);
@@ -103,26 +94,58 @@ describe("inline image byte actions", () => {
     vi.stubGlobal("navigator", { clipboard: { write } });
     vi.stubGlobal("ClipboardItem", TestClipboardItem);
 
-    await copyInlineImage("https://environment.test/figure.svg");
+    await copyStaticImage("https://environment.test/figure.svg");
 
     expect(drawImage).toHaveBeenCalledWith(expect.any(TestImage), 0, 0, 600, 400);
     expect(items).toEqual([{ "image/png": png }]);
     expect(write).toHaveBeenCalledOnce();
   });
 
-  it("downloads the unmodified original bytes with the project filename", async () => {
+  it("downloads the unmodified original bytes with the artifact filename", async () => {
     const source = new Blob(["<svg/>"], { type: "image/svg+xml" });
+    const click = vi.fn();
+    const remove = vi.fn();
+    const append = vi.fn();
+    const revokeObjectURL = vi.fn();
+    const anchor = {
+      download: "",
+      href: "",
+      rel: "",
+      style: { display: "" },
+      click,
+      remove,
+    };
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, blob: async () => source }));
+    vi.stubGlobal("URL", {
+      createObjectURL: () => "blob:download",
+      revokeObjectURL,
+    });
+    vi.stubGlobal("document", {
+      body: { append },
+      createElement: () => anchor,
+    });
+    vi.stubGlobal("window", {
+      setTimeout: (callback: () => void) => {
+        callback();
+        return 1;
+      },
+    });
 
-    await downloadInlineImage("https://environment.test/figure.svg", "figure.svg");
+    await downloadStaticImage("https://environment.test/figure.svg", "figure.svg");
 
-    expect(downloadState.calls).toEqual([{ blob: source, fileName: "figure.svg" }]);
+    expect(anchor.href).toBe("blob:download");
+    expect(anchor.download).toBe("figure.svg");
+    expect(anchor.rel).toBe("noopener");
+    expect(append).toHaveBeenCalledWith(anchor);
+    expect(click).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledOnce();
+    expect(revokeObjectURL).toHaveBeenCalledWith("blob:download");
   });
 
   it("rejects failed requests and non-image responses", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 404 }));
     await expect(
-      downloadInlineImage("https://environment.test/missing.png", "missing.png"),
+      downloadStaticImage("https://environment.test/missing.png", "missing.png"),
     ).rejects.toThrow(/status 404/u);
 
     vi.stubGlobal(
@@ -133,7 +156,7 @@ describe("inline image byte actions", () => {
       }),
     );
     await expect(
-      downloadInlineImage("https://environment.test/file.txt", "file.txt"),
+      downloadStaticImage("https://environment.test/file.txt", "file.txt"),
     ).rejects.toThrow(/not an image/u);
   });
 });

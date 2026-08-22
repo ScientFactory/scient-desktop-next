@@ -15,6 +15,10 @@
       "types": "./src/settings.ts",
       "import": "./src/settings.ts"
     },
+    "./scient-compute": {
+      "types": "./src/scientCompute.ts",
+      "import": "./src/scientCompute.ts"
+    },
     "./relay": {
       "types": "./src/relay.ts",
       "import": "./src/relay.ts"
@@ -26,6 +30,7 @@
   },
   "dependencies": {
     "@scientfactory/analysis": "workspace:*",
+    "@scientfactory/compute": "workspace:*",
     "@scientfactory/document-artifacts": "workspace:*",
     "@scientfactory/scient-sources": "workspace:*",
     "effect": "catalog:"

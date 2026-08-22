@@ -1,0 +1,12 @@
+{
+  "protocolVersion": 1,
+  "type": "stream",
+  "sessionId": "session-golden",
+  "generation": 1,
+  "requestId": "request-1",
+  "sequence": 1,
+  "payload": {
+    "stream": "stdout",
+    "text": "hello world\n"
+  }
+}

@@ -160,6 +160,7 @@ import {
   selectThreadPreviewMiniPlayer,
   usePreviewMiniPlayerStore,
 } from "../previewMiniPlayerStore";
+import type { PreviewStaticImageSurfaceDescriptor } from "../previewStaticImageSurface";
 import { isThreadOwnPullRequest } from "./pullRequest/pullRequestDetail.logic";
 import { PullRequestDetailPanel } from "./pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "./pullRequest/PullRequestGhosts";
@@ -191,7 +192,11 @@ import {
 } from "lucide-react";
 import { cn, randomHex } from "~/lib/utils";
 import { useScientFileOpening } from "~/scient/fileOpening/useScientFileOpening";
-import { scientSourcePdfSurface, scientSourcesSurface } from "~/scient/rightPanel/surfaces";
+import {
+  scientComputeSurface,
+  scientSourcePdfSurface,
+  scientSourcesSurface,
+} from "~/scient/rightPanel/surfaces";
 // SCIENT-FORK:START — thread queue seam. To retire, delete this block, the
 // marked blocks below, and `~/scient/threadQueue`.
 import { ThreadQueueStrip } from "~/scient/threadQueue/ThreadQueueStrip";
@@ -504,6 +509,16 @@ const ScientArtifactPreview = lazy(() =>
   })),
 );
 const EnvironmentFilePreview = lazy(() => import("../scient/fileOpening/EnvironmentFilePreview"));
+const ComputePanel = lazy(() =>
+  import("../scient/compute/ComputePanel").then((module) => ({
+    default: module.ComputePanel,
+  })),
+);
+const ComputeFigureFollower = lazy(() =>
+  import("../scient/compute/ComputeFigureFollower").then((module) => ({
+    default: module.ComputeFigureFollower,
+  })),
+);
 const EMPTY_PENDING_FILE_SURFACE_IDS: ReadonlySet<string> = new Set();
 const TYPE_TO_FOCUS_EDITABLE_SELECTOR = [
   "input",
@@ -1803,6 +1818,19 @@ function ChatViewContent(props: ChatViewProps) {
   const activePreviewMiniPlayer = usePreviewMiniPlayerStore((state) =>
     selectThreadPreviewMiniPlayer(state.byThreadKey, activeThreadRef),
   );
+  const openStaticArtifacts = useMemo(() => {
+    const bySurfaceId = new Map<string, PreviewStaticImageSurfaceDescriptor>();
+    for (const surface of rightPanelState.surfaces) {
+      if (surface.kind === "scient" && surface.module === "artifact") {
+        bySurfaceId.set(surface.artifact.surfaceId, surface.artifact);
+      }
+    }
+    if (activePreviewMiniPlayer?.content.kind === "static-artifact") {
+      const artifact = activePreviewMiniPlayer.content.artifact;
+      bySurfaceId.set(artifact.surfaceId, artifact);
+    }
+    return [...bySurfaceId.values()];
+  }, [activePreviewMiniPlayer, rightPanelState.surfaces]);
   const panelTerminalIds = useMemo(
     () =>
       new Set(
@@ -3646,6 +3674,12 @@ function ChatViewContent(props: ChatViewProps) {
     if (!activeThreadRef || !activeProject || activeWorkspaceRoot === undefined) return;
     useRightPanelStore.getState().openScient(activeThreadRef, scientSourcesSurface());
   }, [activeProject, activeThreadRef, activeWorkspaceRoot]);
+  const addComputeSurface = useCallback(() => {
+    if (!activeThreadRef || activeWorkspaceRoot === undefined) return;
+    useRightPanelStore
+      .getState()
+      .openScient(activeThreadRef, scientComputeSurface({ cwd: activeWorkspaceRoot }));
+  }, [activeThreadRef, activeWorkspaceRoot]);
   const openScientSourcePdf = useCallback(
     (input: {
       readonly sourceId: string;
@@ -6958,6 +6992,16 @@ function ChatViewContent(props: ChatViewProps) {
         threadId={activeThreadRef?.threadId ?? null}
       />
     ) : activeRightPanelSurface?.kind === "scient" &&
+      activeRightPanelSurface.module === "compute" &&
+      activeThreadRef ? (
+      <Suspense fallback={null}>
+        <ComputePanel
+          environmentId={activeThreadRef.environmentId}
+          cwd={activeRightPanelSurface.cwd}
+          threadRef={activeThreadRef}
+        />
+      </Suspense>
+    ) : activeRightPanelSurface?.kind === "scient" &&
       activeRightPanelSurface.module === "file" &&
       activeThreadRef ? (
       <Suspense fallback={null}>
@@ -7408,6 +7452,17 @@ function ChatViewContent(props: ChatViewProps) {
               </div>
             </div>
 
+            {activeThreadRef && activeWorkspaceRoot && openStaticArtifacts.length > 0 ? (
+              <Suspense fallback={null}>
+                <ComputeFigureFollower
+                  artifacts={openStaticArtifacts}
+                  cwd={activeWorkspaceRoot}
+                  environmentId={activeThreadRef.environmentId}
+                  threadRef={activeThreadRef}
+                />
+              </Suspense>
+            ) : null}
+
             {activeThreadRef && activePreviewMiniPlayer ? (
               <ThreadPreviewMiniPlayer
                 key={`${activeThreadKey}:${activePreviewMiniPlayer.content.id}`}
@@ -7510,6 +7565,7 @@ function ChatViewContent(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurface}
           onAddAgents={addAgentsSurface}
           onAddSources={addSourcesSurface}
+          onAddCompute={addComputeSurface}
           browserAvailable={isPreviewSupportedInRuntime()}
           terminalAvailable={activeTerminalTarget !== null}
           diffAvailable={diffAvailable}
@@ -7517,6 +7573,7 @@ function ChatViewContent(props: ChatViewProps) {
           pullRequestAvailable={pullRequestSurfaceAvailable}
           agentsAvailable
           sourcesAvailable={activeProject !== null && activeWorkspaceRoot !== undefined}
+          computeAvailable={activeProject !== null && activeWorkspaceRoot !== undefined}
           pullRequestStatuses={pullRequestTabStatuses}
           liveAgentCount={agentPanelModel.liveCount}
         >
@@ -7554,6 +7611,7 @@ function ChatViewContent(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurface}
             onAddAgents={addAgentsSurface}
             onAddSources={addSourcesSurface}
+            onAddCompute={addComputeSurface}
             browserAvailable={isPreviewSupportedInRuntime()}
             terminalAvailable={activeTerminalTarget !== null}
             diffAvailable={diffAvailable}
@@ -7561,6 +7619,7 @@ function ChatViewContent(props: ChatViewProps) {
             pullRequestAvailable={pullRequestSurfaceAvailable}
             agentsAvailable
             sourcesAvailable={activeProject !== null && activeWorkspaceRoot !== undefined}
+            computeAvailable={activeProject !== null && activeWorkspaceRoot !== undefined}
             pullRequestStatuses={pullRequestTabStatuses}
             liveAgentCount={agentPanelModel.liveCount}
           >

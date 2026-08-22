@@ -3,6 +3,8 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   clampPreviewMiniPlayerPosition,
   clampPreviewMiniPlayerSize,
+  keyboardNudgePreviewMiniPlayerPosition,
+  keyboardResizePreviewMiniPlayerFromHandle,
   PREVIEW_MINI_PLAYER_DEFAULT_SIZE,
   PREVIEW_MINI_PLAYER_DEFAULT_TOP,
   PREVIEW_MINI_PLAYER_EDGE_GAP,
@@ -86,6 +88,84 @@ describe("clampPreviewMiniPlayerSize", () => {
     expect(
       clampPreviewMiniPlayerSize({ width: 360, height: 239 }, { width: 250, height: 180 }, 20),
     ).toEqual({ width: 226, height: 136 });
+  });
+});
+
+describe("keyboardNudgePreviewMiniPlayerPosition", () => {
+  const container = { width: 1_000, height: 700 };
+  const player = { width: 360, height: 240 };
+
+  it("moves by the requested step", () => {
+    expect(
+      keyboardNudgePreviewMiniPlayerPosition({ x: 500, y: 300 }, "left", 8, container, player),
+    ).toEqual({ x: 492, y: 300 });
+    expect(
+      keyboardNudgePreviewMiniPlayerPosition({ x: 500, y: 300 }, "down", 80, container, player),
+    ).toEqual({ x: 500, y: 380 });
+  });
+
+  it("uses the same viewport bounds as pointer movement", () => {
+    expect(
+      keyboardNudgePreviewMiniPlayerPosition(
+        { x: 20, y: PREVIEW_MINI_PLAYER_EDGE_GAP },
+        "left",
+        80,
+        container,
+        player,
+      ),
+    ).toEqual({ x: PREVIEW_MINI_PLAYER_EDGE_GAP, y: PREVIEW_MINI_PLAYER_EDGE_GAP });
+    expect(
+      keyboardNudgePreviewMiniPlayerPosition({ x: 628, y: 448 }, "right", 80, container, player),
+    ).toEqual({ x: 628, y: 448 });
+  });
+});
+
+describe("keyboardResizePreviewMiniPlayerFromHandle", () => {
+  const rect = { position: { x: 200, y: 160 }, size: { width: 320, height: 200 } };
+  const container = { width: 1_000, height: 700 };
+
+  it("moves the focused edge in the arrow's screen direction", () => {
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "w", "left", 12, container)).toEqual({
+      position: { x: 188, y: 160 },
+      size: { width: 332, height: 200 },
+    });
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "e", "left", 12, container)).toEqual({
+      position: { x: 200, y: 160 },
+      size: { width: 308, height: 200 },
+    });
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "n", "up", 12, container)).toEqual({
+      position: { x: 200, y: 148 },
+      size: { width: 320, height: 212 },
+    });
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "s", "down", 12, container)).toEqual({
+      position: { x: 200, y: 160 },
+      size: { width: 320, height: 212 },
+    });
+  });
+
+  it("ignores arrows on an axis the focused handle does not control", () => {
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "e", "up", 12, container)).toBeNull();
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "s", "left", 12, container)).toBeNull();
+  });
+
+  it("lets corner handles control both axes and preserves pointer bounds", () => {
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "se", "right", 12, container)).toEqual({
+      position: { x: 200, y: 160 },
+      size: { width: 332, height: 200 },
+    });
+    expect(keyboardResizePreviewMiniPlayerFromHandle(rect, "se", "up", 1_000, container)).toEqual({
+      position: { x: 200, y: 160 },
+      size: { width: 320, height: 150 },
+    });
+    expect(
+      keyboardResizePreviewMiniPlayerFromHandle(
+        { position: { x: 20, y: 20 }, size: { width: 940, height: 660 } },
+        "nw",
+        "left",
+        1_000,
+        container,
+      ),
+    ).toEqual({ position: { x: 12, y: 20 }, size: { width: 948, height: 660 } });
   });
 });
 

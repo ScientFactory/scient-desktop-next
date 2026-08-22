@@ -4,7 +4,12 @@ import {
   type ResolvedKeybindingsConfig,
   type ScopedThreadRef,
 } from "@t3tools/contracts";
-import { VirtualizedFile, type SelectedLineRange } from "@pierre/diffs";
+import {
+  VirtualizedFile,
+  type EditorSelection,
+  type GetHoveredLineResult,
+  type SelectedLineRange,
+} from "@pierre/diffs";
 import { Editor } from "@pierre/diffs/editor";
 import { EditProvider, File, type FileOptions, Virtualizer } from "@pierre/diffs/react";
 import {
@@ -13,7 +18,16 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import { ChevronRight, Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
 import * as Schema from "effect/Schema";
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { openFileInPreview, resolveWorkspaceFileLinkOpenTarget } from "~/browser/openFileInPreview";
 import { useAssetUrlState } from "~/assets/assetUrls";
@@ -104,6 +118,7 @@ const FILE_EXPLORER_STORAGE_KEY = "t3code.fileExplorerOpen";
 const RENDER_MARKDOWN_STORAGE_KEY = "t3code.renderMarkdown";
 const FILE_SAVE_DEBOUNCE_MS = 500;
 const FILE_LINK_REVEAL_ATTRIBUTE = "data-file-link-reveal";
+const FILE_ACTIVE_RANGE_ATTRIBUTE = "data-scient-active-range";
 const FILE_LINK_REVEAL_UNSAFE_CSS = `
   ${DIFF_SURFACE_THEME_UNSAFE_CSS}
 
@@ -145,6 +160,21 @@ const FILE_LINK_REVEAL_UNSAFE_CSS = `
     ) !important;
     color: var(--diffs-selection-number-fg) !important;
   }
+
+  :host([${FILE_ACTIVE_RANGE_ATTRIBUTE}]) [data-line][data-selected-line] {
+    background-color: light-dark(
+      color-mix(in srgb, var(--primary) 8%, transparent),
+      color-mix(in srgb, var(--primary) 12%, transparent)
+    ) !important;
+  }
+
+  :host([${FILE_ACTIVE_RANGE_ATTRIBUTE}]) [data-column-number][data-selected-line] {
+    background-color: light-dark(
+      color-mix(in srgb, var(--primary) 13%, transparent),
+      color-mix(in srgb, var(--primary) 18%, transparent)
+    ) !important;
+    color: var(--diffs-fg-number) !important;
+  }
 `;
 const ScientPdfReader = lazy(() =>
   import("~/scient/pdf/ScientPdfReader").then((module) => ({
@@ -154,6 +184,11 @@ const ScientPdfReader = lazy(() =>
 const ScientLatexSurface = lazy(() =>
   import("~/scient/latex/ScientLatexSurface").then((module) => ({
     default: module.ScientLatexSurface,
+  })),
+);
+const ScientPythonComputeSurface = lazy(() =>
+  import("~/scient/compute/ScientPythonComputeSurface").then((module) => ({
+    default: module.ScientPythonComputeSurface,
   })),
 );
 type FilePostRender = NonNullable<FileOptions<unknown>["onPostRender"]>;
@@ -441,6 +476,13 @@ interface EditableFileSurfaceProps {
   onSaveConfirmed: (relativePath: string, contents: string, revision: string) => void;
   onSaveResolutionApplied: () => void;
   saveResolution: FileSaveResolution | null;
+  onSelectionChange?: (range: SelectedLineRange | null) => void;
+  activeLineRange?: SelectedLineRange | null;
+  onEditorSelectionChange?: (selection: EditorSelection | null) => void;
+  renderEditorGutterAction?: (
+    getHoveredLine: () => GetHoveredLineResult<"file"> | undefined,
+  ) => ReactNode;
+  onRunShortcut?: (selection: EditorSelection | null) => void;
 }
 
 interface FileSelectionOverride {
@@ -538,6 +580,11 @@ export function EditableFileSurface({
   onSaveConfirmed,
   onSaveResolutionApplied,
   saveResolution,
+  onSelectionChange,
+  activeLineRange,
+  onEditorSelectionChange,
+  renderEditorGutterAction,
+  onRunShortcut,
 }: EditableFileSurfaceProps) {
   const addReviewComment = useComposerDraftStore((store) => store.addReviewComment);
   const removeReviewComment = useComposerDraftStore((store) => store.removeReviewComment);
@@ -545,14 +592,18 @@ export function EditableFileSurface({
   const [selectionOverride, setSelectionOverride] = useState<FileSelectionOverride | null>(null);
   const selectedRange =
     selectionOverride?.revealRequestId === revealRequestId ? selectionOverride.range : null;
+  const displayedRange = selectedRange ?? activeLineRange ?? null;
   const setSelectedRange = useCallback(
     (range: SelectedLineRange | null) => {
       setSelectionOverride({ revealRequestId, range });
+      onSelectionChange?.(range);
     },
-    [revealRequestId],
+    [onSelectionChange, revealRequestId],
   );
   const surfaceRef = useRef<HTMLDivElement>(null);
   const selectionFrameRef = useRef<number | null>(null);
+  const editorSelectionFrameRef = useRef<number | null>(null);
+  const reportEditorSelectionRef = useRef<() => void>(() => undefined);
   const saveCoordinator = useFileSaveCoordinator({
     environmentId,
     cwd,
@@ -594,17 +645,41 @@ export function EditableFileSurface({
               }
             }
           }
+          queueMicrotask(() => reportEditorSelectionRef.current());
         },
+        onFocus: () => queueMicrotask(() => reportEditorSelectionRef.current()),
       }),
     [addReviewComment, composerDraftTarget, cwd, environmentId, relativePath, saveCoordinator],
   );
 
-  useEffect(
-    () => () => {
-      editor.cleanUp();
-    },
-    [editor],
-  );
+  const reportEditorSelection = useCallback(() => {
+    if (onEditorSelectionChange === undefined) return;
+    if (editorSelectionFrameRef.current !== null) {
+      cancelAnimationFrame(editorSelectionFrameRef.current);
+    }
+    editorSelectionFrameRef.current = requestAnimationFrame(() => {
+      editorSelectionFrameRef.current = null;
+      onEditorSelectionChange(editor.getState().selections?.at(-1) ?? null);
+    });
+  }, [editor, onEditorSelectionChange]);
+  reportEditorSelectionRef.current = reportEditorSelection;
+
+  useEffect(() => {
+    if (onEditorSelectionChange === undefined) return;
+    const handleSelectionChange = () => {
+      const surface = surfaceRef.current;
+      if (surface === null || !surface.contains(document.activeElement)) return;
+      reportEditorSelection();
+    };
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => {
+      document.removeEventListener("selectionchange", handleSelectionChange);
+      if (editorSelectionFrameRef.current !== null) {
+        cancelAnimationFrame(editorSelectionFrameRef.current);
+        editorSelectionFrameRef.current = null;
+      }
+    };
+  }, [onEditorSelectionChange, reportEditorSelection]);
 
   const removeAnnotationEntry = useCallback(
     (entryId: string) => {
@@ -714,9 +789,16 @@ export function EditableFileSurface({
   const handleLineSelectionEnd = useCallback(
     (range: SelectedLineRange | null) => {
       setSelectedRange(range);
-      if (range) {
+      if (range && onSelectionChange === undefined) {
         beginComment(range);
       }
+    },
+    [beginComment, onSelectionChange, setSelectedRange],
+  );
+  const handleGutterUtilityClick = useCallback(
+    (range: SelectedLineRange) => {
+      setSelectedRange(range);
+      beginComment(range);
     },
     [beginComment, setSelectedRange],
   );
@@ -729,20 +811,46 @@ export function EditableFileSurface({
         cancelAnimationFrame(selectionFrameRef.current);
         selectionFrameRef.current = null;
       }
-      if (phase === "unmount") return;
+      if (phase === "unmount") {
+        fileContainer.removeAttribute(FILE_ACTIVE_RANGE_ATTRIBUTE);
+        return;
+      }
 
       selectionFrameRef.current = requestAnimationFrame(() => {
         selectionFrameRef.current = null;
         if (!fileContainer.isConnected) return;
-        instance.setSelectedLines(selectedRange, { notify: false });
+        const showsActiveRange = selectedRange === null && activeLineRange != null;
+        fileContainer.toggleAttribute(FILE_ACTIVE_RANGE_ATTRIBUTE, showsActiveRange);
+        instance.setSelectedLines(
+          displayedRange,
+          showsActiveRange
+            ? { notify: false, activeLineSide: "additions", lineNumberOnly: false }
+            : { notify: false },
+        );
       });
     },
-    [onPostRender, selectedRange],
+    [activeLineRange, displayedRange, onPostRender, selectedRange],
   );
 
   return (
     <EditProvider editor={editor}>
-      <div ref={surfaceRef} className="flex min-h-0 flex-1">
+      <div
+        ref={surfaceRef}
+        className="flex min-h-0 flex-1"
+        onKeyDownCapture={(event) => {
+          if (
+            onRunShortcut === undefined ||
+            event.key !== "Enter" ||
+            (!event.metaKey && !event.ctrlKey) ||
+            event.altKey ||
+            event.shiftKey
+          ) {
+            return;
+          }
+          event.preventDefault();
+          onRunShortcut(editor.getState().selections?.at(-1) ?? null);
+        }}
+      >
         <Virtualizer
           className="file-preview-virtualizer min-h-0 flex-1 overflow-auto"
           config={{
@@ -765,9 +873,11 @@ export function EditableFileSurface({
             }}
             options={{
               disableFileHeader: true,
-              enableGutterUtility: !hasOpenCommentForm,
+              enableGutterUtility: renderEditorGutterAction !== undefined || !hasOpenCommentForm,
               enableLineSelection: !hasOpenCommentForm,
-              onGutterUtilityClick: setSelectedRange,
+              ...(renderEditorGutterAction === undefined
+                ? { onGutterUtilityClick: handleGutterUtilityClick }
+                : {}),
               onLineSelectionChange: setSelectedRange,
               onLineSelectionEnd: handleLineSelectionEnd,
               overflow: wordWrap ? "wrap" : "scroll",
@@ -776,7 +886,7 @@ export function EditableFileSurface({
               unsafeCSS: FILE_LINK_REVEAL_UNSAFE_CSS,
               onPostRender: handlePostRender,
             }}
-            selectedLines={selectedRange}
+            selectedLines={displayedRange}
             lineAnnotations={lineAnnotations}
             renderAnnotation={(annotation) => (
               <div className="py-1">
@@ -793,6 +903,9 @@ export function EditableFileSurface({
                 ))}
               </div>
             )}
+            {...(renderEditorGutterAction === undefined
+              ? {}
+              : { renderGutterUtility: renderEditorGutterAction })}
             className="min-h-full"
             contentEditable
           />
@@ -1259,7 +1372,40 @@ export default function FilePreviewPanel({
               />
             </Suspense>
           ) : relativePath && file.data ? (
-            isMarkdown && renderMarkdown ? (
+            relativePath.toLowerCase().endsWith(".py") && !file.data.truncated ? (
+              <Suspense
+                fallback={
+                  <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
+                    <LoaderCircle className="size-5 animate-spin" />
+                  </div>
+                }
+              >
+                <ScientPythonComputeSurface
+                  key={`${relativePath}:${resolvedTheme}`}
+                  environmentId={environmentId}
+                  threadRef={threadRef}
+                  cwd={cwd}
+                  relativePath={relativePath}
+                  composerDraftTarget={composerDraftTarget}
+                  contents={file.data.contents}
+                  revision={file.data.revision}
+                  resolvedTheme={resolvedTheme}
+                  revealRequestId={revealRequestId}
+                  wordWrap={wordWrap}
+                  sourcePending={
+                    sourcePending ||
+                    (file.authoritativeData !== null &&
+                      file.data.contents !== file.authoritativeData.contents)
+                  }
+                  onPostRender={onFilePostRender}
+                  onPendingChange={handlePendingChange}
+                  onSaveFailure={handleSaveFailure}
+                  onSaveConfirmed={handleSaveConfirmed}
+                  onSaveResolutionApplied={handleSaveResolutionApplied}
+                  saveResolution={saveResolution}
+                />
+              </Suspense>
+            ) : isMarkdown && renderMarkdown ? (
               <RenderedMarkdownSurface
                 environmentId={environmentId}
                 cwd={cwd}
@@ -1328,7 +1474,12 @@ export default function FilePreviewPanel({
             cwd={cwd}
             relativePath={relativePath}
             sourceRevision={file.data?.revision ?? null}
-            sourcePending={sourcePending}
+            sourcePending={
+              sourcePending ||
+              (file.data !== null &&
+                file.authoritativeData !== null &&
+                file.data.contents !== file.authoritativeData.contents)
+            }
             truncated={file.data?.truncated ?? false}
           />
         </div>

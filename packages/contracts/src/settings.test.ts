@@ -264,6 +264,45 @@ describe("ServerSettings worktree defaults", () => {
   });
 });
 
+describe("ServerSettings scientific computing", () => {
+  it("keeps old settings files valid and leaves every language opt-in", () => {
+    expect(decodeServerSettings({}).scientificComputing).toEqual({
+      schemaVersion: 1,
+      languages: {},
+    });
+    expect(DEFAULT_SERVER_SETTINGS.scientificComputing.languages).toEqual({});
+  });
+
+  it("round-trips independent language preferences without installation state", () => {
+    const settings = decodeServerSettings({
+      scientificComputing: {
+        schemaVersion: 1,
+        languages: {
+          python: { enabled: true, executable: " /opt/python/bin/python3 " },
+          r: { enabled: false, executable: "" },
+        },
+      },
+    });
+    expect(settings.scientificComputing.languages).toEqual({
+      python: { enabled: true, executable: "/opt/python/bin/python3" },
+      r: { enabled: false, executable: "" },
+    });
+    expect(encodeServerSettings(settings).scientificComputing).toEqual(
+      settings.scientificComputing,
+    );
+  });
+
+  it("accepts a narrow per-language patch", () => {
+    expect(
+      decodeServerSettingsPatch({
+        scientificComputing: {
+          languages: { python: { enabled: true } },
+        },
+      }).scientificComputing,
+    ).toEqual({ languages: { python: { enabled: true } } });
+  });
+});
+
 describe("ServerSettings.sourceControlWritingStyle", () => {
   it("defaults all style settings for legacy configs", () => {
     const settings = decodeServerSettings({});

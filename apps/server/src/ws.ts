@@ -54,6 +54,8 @@ import {
   AssetGeneratedDocumentResolutionError,
   AssetAnalysisArtifactNotFoundError,
   AssetAnalysisArtifactResolutionError,
+  AssetComputeOutputNotFoundError,
+  AssetComputeOutputResolutionError,
   RpcClientId,
   EnvironmentAuthorizationError,
   ThreadId,
@@ -96,6 +98,8 @@ import * as ProviderLifecycleCoordinator from "./scient/providerLifecycle/Provid
 import * as ProviderRuntimeManager from "./scient/providerLifecycle/ProviderRuntimeManager.ts";
 import * as GeneratedDocumentStore from "./scient/documentArtifacts/GeneratedDocumentStore.ts";
 import * as AnalysisService from "./scient/analysis/AnalysisService.ts";
+import { makeComputeRpcGateway } from "./scient/compute/ComputeRpcGateway.ts";
+import * as ComputeSessionService from "./scient/compute/ComputeSessionService.ts";
 import { prepareEnvironmentFileOpen } from "./scient/fileOpening/EnvironmentFileOpen.ts";
 import { SCIENT_QUICK_CHAT_SERVER_CAPABILITIES } from "./scient/quickChat/ServerCapability.ts";
 import { ensureScientQuickChatMoveHasNoRunningTerminals } from "./scient/quickChat/MoveCoordinator.ts";
@@ -416,6 +420,12 @@ const makeWsRpcLayer = (
       const workspaceEntries = yield* WorkspaceEntries.WorkspaceEntries;
       const workspaceFileSystem = yield* WorkspaceFileSystem.WorkspaceFileSystem;
       const analysis = yield* AnalysisService.AnalysisService;
+      const compute = yield* ComputeSessionService.ComputeSessionService;
+      const computeGateway = makeComputeRpcGateway({
+        compute,
+        serverSettings,
+        workspaceFileSystem,
+      });
       const projectSetupScriptRunner = yield* ProjectSetupScriptRunner.ProjectSetupScriptRunner;
       const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
       const generatedDocuments = yield* GeneratedDocumentStore.GeneratedDocumentStore;
@@ -2058,6 +2068,74 @@ const makeWsRpcLayer = (
           observeRpcStreamEffect(WS_METHODS.subscribeAnalysisRuns, analysis.subscribeRuns(input), {
             "rpc.aggregate": "analysis",
           }),
+        [WS_METHODS.computeInspectRuntimes]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.computeInspectRuntimes,
+            computeGateway.inspectRuntimes(input),
+            { "rpc.aggregate": "compute" },
+          ),
+        [WS_METHODS.computeVerifyRuntime]: (input) =>
+          observeRpcEffect(WS_METHODS.computeVerifyRuntime, computeGateway.verifyRuntime(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeStartSession]: (input) =>
+          observeRpcEffect(WS_METHODS.computeStartSession, computeGateway.startSession(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeListSessions]: (input) =>
+          observeRpcEffect(WS_METHODS.computeListSessions, computeGateway.listSessions(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeGetSession]: (input) =>
+          observeRpcEffect(WS_METHODS.computeGetSession, computeGateway.getSession(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeRestartSession]: (input) =>
+          observeRpcEffect(WS_METHODS.computeRestartSession, computeGateway.restartSession(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeStopSession]: (input) =>
+          observeRpcEffect(WS_METHODS.computeStopSession, computeGateway.stopSession(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeSubmitExecution]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.computeSubmitExecution,
+            computeGateway.submitExecution(input),
+            { "rpc.aggregate": "compute" },
+          ),
+        [WS_METHODS.computeCancelExecution]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.computeCancelExecution,
+            computeGateway.cancelExecution(input),
+            { "rpc.aggregate": "compute" },
+          ),
+        [WS_METHODS.computeInterruptSession]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.computeInterruptSession,
+            computeGateway.interruptSession(input),
+            { "rpc.aggregate": "compute" },
+          ),
+        [WS_METHODS.computeListExecutions]: (input) =>
+          observeRpcEffect(WS_METHODS.computeListExecutions, computeGateway.listExecutions(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeListOutputs]: (input) =>
+          observeRpcEffect(WS_METHODS.computeListOutputs, computeGateway.listOutputs(input), {
+            "rpc.aggregate": "compute",
+          }),
+        [WS_METHODS.computeInspectVariables]: (input) =>
+          observeRpcEffect(
+            WS_METHODS.computeInspectVariables,
+            computeGateway.inspectVariables(input),
+            { "rpc.aggregate": "compute" },
+          ),
+        [WS_METHODS.subscribeComputeSessions]: (input) =>
+          observeRpcStreamEffect(
+            WS_METHODS.subscribeComputeSessions,
+            computeGateway.subscribeSessions(input),
+            { "rpc.aggregate": "compute" },
+          ),
         [WS_METHODS.shellOpenInEditor]: (input) =>
           observeRpcEffect(WS_METHODS.shellOpenInEditor, externalLauncher.launchEditor(input), {
             "rpc.aggregate": "workspace",
@@ -2103,6 +2181,27 @@ const makeWsRpcLayer = (
                   });
                 }
                 return yield* issueAssetUrl({ resource: input.resource, analysisArtifact });
+              }
+              if (input.resource._tag === "compute-output") {
+                const computeOutput = yield* compute.resolveOutputImage(input.resource).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new AssetComputeOutputResolutionError({
+                        resource: input.resource,
+                        cause,
+                      }),
+                  ),
+                );
+                // An image whose bytes are gone or no longer hash to what was
+                // asked for is not an image: a session's transcript outlives
+                // the files it points at, so this is an ordinary outcome
+                // rather than a fault.
+                if (computeOutput === null) {
+                  return yield* new AssetComputeOutputNotFoundError({
+                    resource: input.resource,
+                  });
+                }
+                return yield* issueAssetUrl({ resource: input.resource, computeOutput });
               }
               if (input.resource._tag === "generated-document") {
                 const retained = yield* generatedDocuments
@@ -2616,6 +2715,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
     const serverSelfUpdate = yield* ServerSelfUpdate.ServerSelfUpdate;
     const pullRequests = yield* PullRequestService.PullRequestService;
     const analysis = yield* AnalysisService.AnalysisService;
+    const compute = yield* ComputeSessionService.ComputeSessionService;
     return HttpRouter.add(
       "GET",
       "/ws",
@@ -2664,6 +2764,7 @@ export const websocketRpcRouteLayer = Layer.unwrap(
               // mutation invalidates the HTTP diff cache that every client reads from.
               Layer.provide(Layer.succeed(PullRequestService.PullRequestService, pullRequests)),
               Layer.provide(Layer.succeed(AnalysisService.AnalysisService, analysis)),
+              Layer.provide(Layer.succeed(ComputeSessionService.ComputeSessionService, compute)),
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

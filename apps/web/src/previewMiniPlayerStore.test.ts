@@ -111,7 +111,11 @@ describe("previewMiniPlayerStore", () => {
 
   it("updates an open artifact to the latest run without losing the card layout", () => {
     const first = artifact("run-1");
-    const updated = artifact("run-2", "Updated figure");
+    const updated = {
+      ...artifact("run-2", "Updated figure"),
+      reloadKey: "revision-2",
+      statusLabel: "Previous figure",
+    };
     usePreviewMiniPlayerStore.getState().openArtifact(refA, first, { x: 90, y: 70 });
     usePreviewMiniPlayerStore.getState().resize(refA, first.surfaceId, {
       width: 500,
@@ -126,5 +130,17 @@ describe("previewMiniPlayerStore", () => {
       position: { x: 90, y: 70 },
       size: { width: 500, height: 340 },
     });
+  });
+
+  it("never recreates a floating card during a passive artifact update", () => {
+    const first = artifact("run-1");
+    const updated = artifact("run-2");
+    usePreviewMiniPlayerStore.getState().updateArtifact(refA, updated);
+    expect(usePreviewMiniPlayerStore.getState().byThreadKey).toEqual({});
+
+    usePreviewMiniPlayerStore.getState().openArtifact(refA, first);
+    usePreviewMiniPlayerStore.getState().close(refA);
+    usePreviewMiniPlayerStore.getState().updateArtifact(refA, updated);
+    expect(usePreviewMiniPlayerStore.getState().byThreadKey).toEqual({});
   });
 });

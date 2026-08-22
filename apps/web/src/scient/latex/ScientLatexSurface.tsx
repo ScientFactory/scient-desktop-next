@@ -28,7 +28,7 @@ import { DIFF_SURFACE_THEME_UNSAFE_CSS, resolveDiffThemeName } from "~/lib/diffR
 import { cn } from "~/lib/utils";
 import { scientificSourceLanguageOverride } from "~/scient/analysis/sourceLanguage";
 import { type FileSaveResolution } from "~/scient/fileSurfaces/useWorkspaceFileRefresh";
-import { useScientHorizontalSplit } from "~/scient/layout/useScientHorizontalSplit";
+import { useScientSplit } from "~/scient/layout/useScientSplit";
 import { ResizeSeparator } from "~/scient/layout/ResizeSeparator";
 import type {
   PdfForwardSyncTarget,
@@ -481,7 +481,7 @@ export function ScientLatexSurface(props: ScientLatexSurfaceProps) {
     setSplitFraction(fraction);
     persist(LATEX_SPLIT_RATIO_STORAGE_KEY, fraction, Schema.Number);
   }, []);
-  const { containerRef, primaryPaneRef, separatorHandlers } = useScientHorizontalSplit({
+  const { containerRef, primaryPaneRef, separatorHandlers } = useScientSplit({
     active: mode === "split",
     fraction: splitFraction,
     minimum: MIN_LATEX_SPLIT_FRACTION,

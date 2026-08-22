@@ -24,6 +24,7 @@ Scient release authority.
 - [Diagrams in chat](./user/diagrams-in-chat.md)
 - [Images in chat](./user/images-in-chat.md)
 - [Interactive charts in chat](./user/charts-in-chat.md)
+- [Scientific computing](./user/scientific-computing.md)
 - [Run a MATLAB file](./user/matlab-run-file.md)
 - [Sources and Zotero import](./user/sources.md)
 - [Background service (Linux)](./user/background-service.md)

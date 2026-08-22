@@ -55,6 +55,10 @@
       "types": "./src/state/analysis.ts",
       "default": "./src/state/analysis.ts"
     },
+    "./state/compute": {
+      "types": "./src/state/compute.ts",
+      "default": "./src/state/compute.ts"
+    },
     "./state/assets": {
       "types": "./src/state/assets.ts",
       "default": "./src/state/assets.ts"
