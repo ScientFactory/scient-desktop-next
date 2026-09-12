@@ -1,5 +1,12 @@
 import { LRUCache } from "~/lib/lruCache";
 import { dependencies } from "../../../package.json";
+import {
+  isMermaidSyntaxError,
+  planMermaidRecovery,
+  MAX_MERMAID_SOURCE_LENGTH,
+  type MermaidRecovery,
+} from "./mermaidRecovery";
+export { MAX_MERMAID_SOURCE_LENGTH } from "./mermaidRecovery";
 
 export const MERMAID_VERSION = dependencies.mermaid;
 
@@ -8,9 +15,9 @@ export type MermaidTheme = "light" | "dark";
 export interface RenderedMermaidDiagram {
   readonly svg: string;
   readonly diagramType: string;
+  readonly recovery?: MermaidRecovery;
 }
 
-export const MAX_MERMAID_SOURCE_LENGTH = 50_000;
 const MAX_MERMAID_EDGES = 500;
 const MAX_RENDER_CACHE_ENTRIES = 100;
 const MAX_RENDER_CACHE_MEMORY_BYTES = 20 * 1024 * 1024;
@@ -18,6 +25,7 @@ const MAX_RENDER_CACHE_MEMORY_BYTES = 20 * 1024 * 1024;
 interface CachedMermaidDiagram {
   readonly svgTemplate: string;
   readonly diagramType: string;
+  readonly recovery?: MermaidRecovery;
 }
 
 let mermaidRuntimePromise: Promise<typeof import("mermaid")> | null = null;
@@ -104,8 +112,12 @@ function renderCacheKey(source: string, theme: MermaidTheme): string {
   return `${theme}\u0000${source}`;
 }
 
-function estimateDiagramSize(source: string, svg: string): number {
-  return source.length * 2 + svg.length * 2;
+function estimateDiagramSize(source: string, rendered: CachedMermaidDiagram): number {
+  return (
+    source.length * 2 +
+    rendered.svgTemplate.length * 2 +
+    (rendered.recovery ? JSON.stringify(rendered.recovery).length * 2 : 0)
+  );
 }
 
 /** Keep the parser's source excerpt/caret for repair, without exposing a stack trace. */
@@ -132,33 +144,57 @@ function enqueueRender<T>(operation: () => Promise<T>): Promise<T> {
   return result;
 }
 
+async function renderNativeTemplate(
+  source: string,
+  theme: MermaidTheme,
+): Promise<CachedMermaidDiagram> {
+  const { default: mermaid } = await getMermaidRuntimePromise();
+  mermaid.initialize({
+    startOnLoad: false,
+    securityLevel: "strict",
+    suppressErrorRendering: true,
+    // Mermaid 12 changes these defaults. Preserve existing diagrams' appearance;
+    // authors can still opt into ELK/neo through valid Mermaid frontmatter.
+    layout: "dagre",
+    look: "classic",
+    theme: theme === "dark" ? "dark" : "default",
+    darkMode: theme === "dark",
+    maxTextSize: MAX_MERMAID_SOURCE_LENGTH,
+    maxEdges: MAX_MERMAID_EDGES,
+    htmlLabels: true,
+    forceLegacyMathML: true,
+    fontFamily:
+      'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+    logLevel: "fatal",
+  });
+
+  const result = await mermaid.render(nextRenderId("render"), source);
+  if (!result.svg.includes("<svg")) {
+    throw new Error("Mermaid returned an invalid diagram.");
+  }
+  return { svgTemplate: result.svg, diagramType: result.diagramType };
+}
+
 async function renderTemplate(source: string, theme: MermaidTheme): Promise<CachedMermaidDiagram> {
   return enqueueRender(async () => {
-    const { default: mermaid } = await getMermaidRuntimePromise();
-    mermaid.initialize({
-      startOnLoad: false,
-      securityLevel: "strict",
-      suppressErrorRendering: true,
-      // Mermaid 12 changes these defaults. Preserve existing diagrams' appearance;
-      // authors can still opt into ELK/neo through valid Mermaid frontmatter.
-      layout: "dagre",
-      look: "classic",
-      theme: theme === "dark" ? "dark" : "default",
-      darkMode: theme === "dark",
-      maxTextSize: MAX_MERMAID_SOURCE_LENGTH,
-      maxEdges: MAX_MERMAID_EDGES,
-      htmlLabels: true,
-      forceLegacyMathML: true,
-      fontFamily:
-        'Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      logLevel: "fatal",
-    });
-
-    const result = await mermaid.render(nextRenderId("render"), source);
-    if (!result.svg.includes("<svg")) {
-      throw new Error("Mermaid returned an invalid diagram.");
+    try {
+      return await renderNativeTemplate(source, theme);
+    } catch (originalError) {
+      if (isMermaidSyntaxError(originalError)) {
+        try {
+          const recovery = planMermaidRecovery(source);
+          if (recovery) {
+            // One atomic candidate, containing every compatible edit. A later
+            // parse/layout failure must not expose partial repairs or its error.
+            const rendered = await renderNativeTemplate(recovery.source, theme);
+            return { ...rendered, recovery };
+          }
+        } catch {
+          // Preserve the original diagnostic, source and existing agent fallback.
+        }
+      }
+      throw originalError;
     }
-    return { svgTemplate: result.svg, diagramType: result.diagramType };
   });
 }
 
@@ -172,7 +208,7 @@ async function getTemplate(source: string, theme: MermaidTheme): Promise<CachedM
 
   const pending = renderTemplate(source, theme)
     .then((rendered) => {
-      renderCache.set(key, rendered, estimateDiagramSize(source, rendered.svgTemplate));
+      renderCache.set(key, rendered, estimateDiagramSize(source, rendered));
       return rendered;
     })
     .finally(() => {
@@ -193,6 +229,7 @@ export async function renderMermaidDiagram(
     return {
       svg: rebaseMermaidSvgIds(template.svgTemplate, nextRenderId("instance")),
       diagramType: template.diagramType,
+      ...(template.recovery ? { recovery: template.recovery } : {}),
     };
   } catch (cause) {
     throw new MermaidRenderError(cause);

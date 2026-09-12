@@ -71,7 +71,13 @@ type DiagramState =
       | { readonly status: "error"; readonly message: string; readonly diagnostic: string }
     ));
 
-type DiagramAction = "copy-source" | "copy-repair" | "copy-png" | "download-png" | null;
+type DiagramAction =
+  | "copy-source"
+  | "copy-recovered-source"
+  | "copy-repair"
+  | "copy-png"
+  | "download-png"
+  | null;
 
 function diagramErrorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message.trim().length > 0
@@ -138,6 +144,14 @@ export function MermaidDiagramCard({
     () => mermaidMarkdownCopySource(source, language, fenceMeta),
     [fenceMeta, language, source],
   );
+  const resultIsCurrent =
+    "source" in diagramState &&
+    diagramState.source === source &&
+    diagramState.theme === theme &&
+    diagramState.retryVersion === retryVersion;
+  const readyResult =
+    diagramState.status === "ready" && resultIsCurrent ? diagramState.result : null;
+  const recovery = readyResult?.recovery;
 
   useEffect(() => {
     if (!isNearViewport) return;
@@ -194,38 +208,36 @@ export function MermaidDiagramCard({
     toastManager.add({ type: "error", title: message, data: { hideCopyButton: true } });
   }, []);
 
-  const handleCopySource = useCallback(() => {
-    if (activeAction != null) return;
-    if (navigator.clipboard?.writeText == null) {
-      showActionError("Clipboard access is unavailable.");
-      return;
-    }
-    setActiveAction("copy-source");
-    void navigator.clipboard.writeText(source).then(
-      () => {
-        setActiveAction(null);
-        showTransientMessage("Source copied");
-      },
-      (cause) => {
-        console.error("[scient-diagrams] Failed to copy Mermaid source", cause);
-        setActiveAction(null);
-        showActionError("Unable to copy the diagram source.");
-      },
-    );
-  }, [activeAction, showActionError, showTransientMessage, source]);
+  const copySource = useCallback(
+    (text: string, recovered = false) => {
+      if (activeAction != null) return;
+      if (navigator.clipboard?.writeText == null) {
+        showActionError("Clipboard access is unavailable.");
+        return;
+      }
+      setActiveAction(recovered ? "copy-recovered-source" : "copy-source");
+      void navigator.clipboard.writeText(text).then(
+        () => {
+          setActiveAction(null);
+          showTransientMessage(recovered ? "Recovered source copied" : "Source copied");
+        },
+        (cause) => {
+          console.error("[scient-diagrams] Failed to copy Mermaid source", cause);
+          setActiveAction(null);
+          showActionError("Unable to copy the diagram source.");
+        },
+      );
+    },
+    [activeAction, showActionError, showTransientMessage],
+  );
+  const handleCopySource = useCallback(() => copySource(source), [copySource, source]);
+  const handleCopyRecoveredSource = recovery ? () => copySource(recovery.source, true) : undefined;
 
   const handleContextMenu = useRichFenceContextMenu(authoringActions, handleCopySource);
   const sourceIsVisible =
     diagramState.status === "error" || sourceVisible === true || sourceEditor?.open === true;
   const handleToggleSource = () => setSourceVisible(!sourceIsVisible);
 
-  const resultIsCurrent =
-    "source" in diagramState &&
-    diagramState.source === source &&
-    diagramState.theme === theme &&
-    diagramState.retryVersion === retryVersion;
-  const readyResult =
-    diagramState.status === "ready" && resultIsCurrent ? diagramState.result : null;
   const repairRequest =
     diagramState.status === "error" && resultIsCurrent
       ? buildMermaidRepairRequest(source, diagramState.diagnostic)
@@ -363,10 +375,21 @@ export function MermaidDiagramCard({
                 <TooltipPopup side="top">More diagram actions</TooltipPopup>
               </Tooltip>
               <VisualCardMenuPopup align="end" className="min-w-52 max-w-[calc(100vw-2rem)]">
-                <VisualCardDetails title={displayTitle} detail={readyResult?.diagramType} />
+                <VisualCardDetails
+                  title={displayTitle}
+                  detail={
+                    recovery ? `${readyResult?.diagramType} · Recovered` : readyResult?.diagramType
+                  }
+                />
+                {recovery ? (
+                  <MenuItem disabled={activeAction != null} onClick={handleCopyRecoveredSource}>
+                    {actionMessage === "Recovered source copied" ? <CheckIcon /> : <CopyIcon />}
+                    Copy recovered source
+                  </MenuItem>
+                ) : null}
                 <MenuItem disabled={activeAction != null} onClick={handleCopySource}>
                   {actionMessage === "Source copied" ? <CheckIcon /> : <CopyIcon />}
-                  Copy source
+                  {recovery ? "Copy original source" : "Copy source"}
                 </MenuItem>
                 <RichFenceSourceMenuItem
                   authoringActions={authoringActions}
@@ -508,6 +531,7 @@ export function MermaidDiagramCard({
           activeAction={activeAction === "copy-repair" ? null : activeAction}
           onCopyPng={handleCopyPng}
           onCopySource={handleCopySource}
+          onCopyRecoveredSource={handleCopyRecoveredSource}
           onDownloadPng={handleDownloadPng}
           onDownloadSvg={handleDownloadSvg}
           onOpenChange={setExpanded}

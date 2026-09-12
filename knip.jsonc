@@ -53,8 +53,14 @@
       "ignoreDependencies": ["playwright-core", "electron-builder"],
     },
     "apps/web": {
-      // Worktree setup invokes this directly from t3.json.
-      "entry": ["scripts/warm-dep-cache.ts", "public/scient-voice-worklet.js!"],
+      // Worktree setup invokes the cache warmer directly from t3.json. The
+      // Mermaid smoke harness loads its recovery corpus through Vite in a real
+      // Chromium renderer, so that fixture module is also a test entry point.
+      "entry": [
+        "scripts/warm-dep-cache.ts",
+        "src/scient/diagrams/mermaidRecovery.fixtures.ts",
+        "public/scient-voice-worklet.js!",
+      ],
       // UI component modules are copied and adapted as cohesive sets. Keep their
       // named subcomponents even before they have callers; the file audit still
       // reports an entire component module when nothing imports it.

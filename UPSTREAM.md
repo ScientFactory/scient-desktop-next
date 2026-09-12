@@ -570,6 +570,13 @@ Provider expansion, prompt previews, and mobile fallback must handle both quote
 types. Do not reinstate an assistant-only parser in these shared entry points
 or turn file citations into file-read operations. The rich editor remains lazy.
 
+Mermaid syntax recovery stays inside the Scient-owned diagram runtime, shared
+by chat and file previews. Preserve its original-first, single-candidate render
+gate and original source/error fallback. Recovery never rewrites messages or
+files; syntax-aware family rules preserve opaque content and refuse semantic
+guesses. Explicit recovered-source copy is separate from canonical source and
+citations. See [chat diagrams](docs/internals/scient-chat-diagrams.md).
+
 No upstream update authorizes public release, live cloud, mobile publication,
 production credentials, or user-data conversion. Those remain separate Scient
 gates even when inherited T3 code contains the capability.

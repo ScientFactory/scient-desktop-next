@@ -12,6 +12,7 @@ import { formatAssistantCitationForComposer } from "~/composer-logic";
 import { getSyntaxHighlighterPromise } from "~/lib/syntaxHighlighting";
 import { MermaidDiagramCard } from "./MermaidDiagramCard";
 import { buildMermaidRepairRequest } from "./mermaidRepair";
+import { planMermaidRecovery } from "./mermaidRecovery";
 import {
   MermaidRenderError,
   renderMermaidDiagram,
@@ -385,5 +386,87 @@ describe("Mermaid error recovery", () => {
       third.resolve({ svg: "<svg><text>Dark diagram</text></svg>", diagramType: "flowchart" }),
     );
     expect(container.textContent).toContain("Dark diagram");
+  });
+
+  it("keeps recovered source explicit and never changes original copy, citations, or source preview", async () => {
+    const original = "flowchart LR\nA[Read (local)] -> B";
+    const recovery = planMermaidRecovery(original)!;
+    vi.mocked(renderMermaidDiagram).mockResolvedValue({
+      svg: "<svg><text>Read (local)</text></svg>",
+      diagramType: "flowchart-v2",
+      recovery,
+    });
+    await render(original);
+    const figure = container.querySelector('[role="figure"]')!;
+    expect(figure.getAttribute("data-markdown-copy")).toContain(original);
+    expect(figure.getAttribute("data-markdown-copy")).not.toContain(recovery.source);
+    expect(container.querySelector('[aria-label="Diagram error"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Ask agent to fix"]')).toBeNull();
+    const children = [...figure.children];
+    await menuAction("Copy recovered source");
+    expect(writeText).toHaveBeenLastCalledWith(recovery.source);
+    expect([...figure.children]).toEqual(children);
+    await menuAction("Copy original source");
+    expect(writeText).toHaveBeenLastCalledWith(original);
+    await menuAction("Show source");
+    expect(container.querySelector(".scient-mermaid-source")?.textContent).toBe(original);
+    expect(toastManager.add).not.toHaveBeenCalled();
+    expect(draft).toBe("An existing draft");
+  });
+
+  it("keeps the original document editor mounted when a recovered result arrives", async () => {
+    const original = "flowchart LR\nA -> B";
+    const cleanup = vi.fn();
+    const editor = { open: true, mount: vi.fn(() => cleanup) };
+    const pending = pendingRender();
+    vi.mocked(renderMermaidDiagram).mockReturnValue(pending.promise);
+    await act(() =>
+      root.render(
+        <MermaidDiagramCard
+          source={original}
+          sourceEditor={editor}
+          language="mermaid"
+          title={null}
+          theme="light"
+        />,
+      ),
+    );
+    expect(editor.mount).toHaveBeenCalledTimes(1);
+    await act(() =>
+      pending.resolve({
+        svg: "<svg/>",
+        diagramType: "flowchart",
+        recovery: planMermaidRecovery(original)!,
+      }),
+    );
+    expect(cleanup).not.toHaveBeenCalled();
+    expect(editor.mount).toHaveBeenCalledTimes(1);
+  });
+
+  it("never exposes recovered source from a stale source or theme", async () => {
+    const original = "flowchart LR\nA -> B";
+    const stale = pendingRender();
+    const current = pendingRender();
+    vi.mocked(renderMermaidDiagram)
+      .mockReturnValueOnce(stale.promise)
+      .mockReturnValueOnce(current.promise);
+    await render(original);
+    await render("flowchart LR\nC --> D", "dark");
+    await act(() =>
+      stale.resolve({
+        svg: "<svg>Old recovered</svg>",
+        diagramType: "flowchart",
+        recovery: planMermaidRecovery(original)!,
+      }),
+    );
+    expect(container.textContent).not.toContain("Old recovered");
+    await act(() => button("More diagram actions").click());
+    expect(document.body.textContent).not.toContain("Copy recovered source");
+    await act(() => button("More diagram actions").click());
+    await act(() => current.reject(new MermaidRenderError(new Error(diagnostic))));
+    await act(() => button("Copy error and source").click());
+    expect(writeText).toHaveBeenLastCalledWith(
+      buildMermaidRepairRequest("flowchart LR\nC --> D", diagnostic),
+    );
   });
 });

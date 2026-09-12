@@ -45,6 +45,19 @@ ordinary code block. Rendering begins only after the answer settles and the
 diagram is close to the visible conversation. A bad or unsupported diagram
 never makes the rest of the answer disappear.
 
+For supported syntax mistakes—such as unquoted labels, misplaced separators,
+the common pie dash separator, quadrant coordinate parentheses, or a known
+command typo—Scient tries a local recovery before showing an error.
+Compatible fixes are tested together; if the diagram still
+cannot render, you get the original source and error with the usual repair
+actions. It never calls an AI automatically or guesses missing diagram content.
+A recovered diagram's More menu offers **Copy recovered source** and **Copy
+original source**. Source inspection and editing still show the original text;
+neither the conversation nor a Markdown file is silently rewritten.
+Missing connections, ambiguous brackets, and incomplete diagram blocks still
+show an error rather than a guessed diagram. Recovery works in both chat and
+Markdown side-panel previews; it needs no extra click.
+
 The Mermaid source remains the original content in the conversation. Copying
 the whole answer preserves a fenced `mermaid` block, so it remains readable
 where an interactive diagram is unavailable. Rendering and image export happen

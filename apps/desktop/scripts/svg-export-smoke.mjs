@@ -9,35 +9,61 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
 const require = NodeModule.createRequire(import.meta.url);
+const STATE_ENV = "SCIENT_SVG_EXPORT_SMOKE_STATE";
+const RENDERER_PROGRESS_PREFIX = "[scient-svg-export-smoke] ";
+
 if (!process.versions.electron) {
-  const environment = { ...process.env };
+  const state = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "scient-svg-export-"));
+  const environment = { ...process.env, [STATE_ENV]: state };
   delete environment.ELECTRON_RUN_AS_NODE;
   // Use the dependency runtime, never the Scient launcher or a user's app.
   // GitHub's Linux runner does not support Electron's OS sandbox. This flag
   // is limited to this disposable test process; renderer web security stays on.
   // oxlint-disable-next-line t3code/no-global-process-runtime -- Standalone regression harness has no Effect runtime.
   const args = NodeOS.platform() === "linux" && process.env.CI ? ["--no-sandbox"] : [];
-  const result = NodeChildProcess.spawnSync(
-    require("electron"),
-    [...args, NodeURL.fileURLToPath(import.meta.url)],
-    { env: environment, stdio: "inherit", timeout: 120_000, killSignal: "SIGTERM" },
-  );
+  let result;
+  try {
+    result = NodeChildProcess.spawnSync(
+      require("electron"),
+      [...args, NodeURL.fileURLToPath(import.meta.url)],
+      { env: environment, stdio: "inherit", timeout: 360_000, killSignal: "SIGTERM" },
+    );
+  } finally {
+    // Electron and Vite keep files open inside userData while the child is
+    // alive. The parent owns cleanup so removal begins only after child exit.
+    NodeFS.rmSync(state, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
   if (result.error) throw result.error;
   process.exit(result.status ?? 1);
 }
 
+async function withTimeout(promise, timeoutMs, describeTimeout) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(describeTimeout())), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function run() {
   const { app, BrowserWindow } = require("electron");
-  const state = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "scient-svg-export-"));
+  const state = process.env[STATE_ENV];
+  NodeAssert.ok(state, `Missing ${STATE_ENV}`);
   app.setPath("userData", state);
   app.dock?.hide();
   app.on("window-all-closed", () => {});
-  const deadline = setTimeout(() => app.exit(1), 100_000);
   const webRoot = NodeURL.fileURLToPath(new URL("../../web/", import.meta.url));
   const webRequire = NodeModule.createRequire(new URL("../../web/package.json", import.meta.url));
   let server;
   let window;
   let externalRequests = 0;
+  let phase = "starting Vite";
   try {
     const { createServer } = await import(webRequire.resolve("vite"));
     server = await createServer({
@@ -79,7 +105,8 @@ async function run() {
       );
       response.end("<!doctype html><html><head><meta charset=utf-8></head><body></body></html>");
     });
-    await server.listen();
+    await withTimeout(server.listen(), 45_000, () => `Timed out while ${phase}`);
+    phase = "loading the export corpus";
     const corpus = await NodeFSP.readFile(
       new URL("../../../docs/fixtures/scient-chat-diagrams.md", import.meta.url),
       "utf8",
@@ -88,14 +115,28 @@ async function run() {
       .map((match) => match[1])
       .slice(0, -2);
     NodeAssert.ok(sources.length >= 13, "The export corpus must not silently disappear");
-    await app.whenReady();
+    phase = "waiting for Electron";
+    await withTimeout(app.whenReady(), 30_000, () => `Timed out while ${phase}`);
+    phase = "creating the Chromium renderer";
     window = new BrowserWindow({
       show: false,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
-    await window.loadURL(`${server.resolvedUrls.local[0]}__svg_export`);
-    const results = await window.webContents.executeJavaScript(
-      `(${async function (sources) {
+    window.webContents.on("console-message", (details) => {
+      const message = details.message;
+      if (typeof message === "string" && message.startsWith(RENDERER_PROGRESS_PREFIX))
+        phase = message.slice(RENDERER_PROGRESS_PREFIX.length);
+    });
+    await withTimeout(
+      window.loadURL(`${server.resolvedUrls.local[0]}__svg_export`),
+      30_000,
+      () => `Timed out while ${phase}`,
+    );
+    phase = "starting renderer assertions";
+    const rendererPromise = window.webContents.executeJavaScript(
+      `(${async function (sources, progressPrefix) {
+        const progress = (message) => console.info(`${progressPrefix}${message}`);
+        progress("loading renderer modules");
         const { renderMermaidDiagram } = await import("/src/scient/diagrams/mermaidRuntime.ts");
         const { prepareSvgForExport, copyMermaidPng, downloadMermaidPng, downloadMermaidSvg } =
           await import("/src/scient/diagrams/mermaidExport.ts");
@@ -160,6 +201,7 @@ async function run() {
         const cases = [];
         for (const theme of ["light", "dark"])
           for (const [index, source] of sources.entries()) {
+            progress(`rendering diagram ${theme}/${index + 1}/${sources.length}`);
             const { svg } = await renderMermaidDiagram(source, theme);
             downloadMermaidSvg(svg, "export-check", theme);
             check(downloaded.name === "export-check.svg", "Wrong SVG filename");
@@ -208,6 +250,7 @@ async function run() {
               check(div.namespaceURI === "http://www.w3.org/1999/xhtml", "HTML namespace lost");
             await copyMermaidPng(svg, theme);
             const png = await pixels(copied);
+            progress(`checking PNG download ${theme}/${index + 1}/${sources.length}`);
             await downloadMermaidPng(svg, "export-check", theme);
             check(downloaded.name === "export-check.png", "Wrong PNG filename");
             check((await pixels(downloaded.blob)).hash === png.hash, "Copy and download diverged");
@@ -222,10 +265,12 @@ async function run() {
               method: "POST",
               body: new Blob([exported], { type: "image/svg+xml" }),
             });
+            progress(`checking saved SVG copy ${theme}/${index + 1}/${sources.length}`);
             await copyStaticImage(`${location.origin}/__saved_svg`);
             await pixels(copied);
             cases.push(`${theme}/${index}`);
           }
+        progress("checking SVG line breaks and Unicode");
         const breaks =
           '<svg viewBox="0 0 300 100"><foreignObject width="300" height="100"><div xmlns="http://www.w3.org/1999/xhtml">שלום &amp; α 😀<br>second&nbsp;line<br/>third</div></foreignObject></svg>';
         const parsed = parse(prepareSvgForExport(breaks, "light"));
@@ -246,12 +291,14 @@ async function run() {
           rejected = true;
         }
         check(rejected, "Invalid XML codepoint was exported");
+        progress("checking bounded raster dimensions");
         await copyMermaidPng(
           '<svg viewBox="0 0 1000000 1000000"><rect width="1000000" height="1000000" fill="red"/></svg>',
           "light",
         );
         const bounded = await pixels(copied);
         // Native image mode must remain non-interactive, even for an arbitrary saved SVG.
+        progress("checking untrusted SVG isolation");
         const untrusted = `<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><script>window.__exportScriptRan=true</script><foreignObject width="100" height="100"><div xmlns="http://www.w3.org/1999/xhtml"><img src="${location.origin}/__external_image" onerror="window.__exportScriptRan=true"/></div></foreignObject></svg>`;
         const image = await loadCanvasImage(new Blob([untrusted], { type: "image/svg+xml" }));
         const canvas = document.createElement("canvas");
@@ -259,6 +306,7 @@ async function run() {
         canvas.getContext("2d").getImageData(0, 0, 1, 1);
         canvas.width = canvas.height = 1;
         check(!window.__exportScriptRan, "SVG image executed code");
+        progress("checking concurrent SVG decoding");
         await Promise.all(
           Array.from({ length: 24 }, async (_, index) => {
             const red = index % 2 ? 255 : 0;
@@ -278,6 +326,7 @@ async function run() {
             }
           }),
         );
+        progress("checking raster image copy");
         const raster = document.createElement("canvas");
         raster.width = raster.height = 4;
         raster.getContext("2d").fillRect(0, 0, 4, 4);
@@ -289,6 +338,7 @@ async function run() {
           check(result.width === 4 && result.height === 4, "Raster image copy regressed");
         }
         raster.width = raster.height = 1;
+        progress("renderer assertions complete");
         return {
           diagramThemeCases: cases.length,
           svgPngDownloadAndCopy: "passed",
@@ -297,7 +347,12 @@ async function run() {
           rasterCopy: "PNG and JPEG passed",
           bounded,
         };
-      }.toString()})(${JSON.stringify(sources)})`,
+      }.toString()})(${JSON.stringify(sources)}, ${JSON.stringify(RENDERER_PROGRESS_PREFIX)})`,
+    );
+    const results = await withTimeout(
+      rendererPromise,
+      180_000,
+      () => `Chromium export smoke test timed out while ${phase}`,
     );
     NodeAssert.equal(externalRequests, 0, "SVG image fetched external resources");
     console.log(
@@ -313,10 +368,10 @@ async function run() {
       ),
     );
   } finally {
-    clearTimeout(deadline);
+    phase = "closing the Chromium renderer";
     window?.destroy();
-    await server?.close();
-    await NodeFSP.rm(state, { recursive: true, force: true });
+    if (server)
+      await withTimeout(server.close(), 15_000, () => `Timed out while closing the Vite server`);
   }
 }
 
