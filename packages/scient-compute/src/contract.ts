@@ -152,7 +152,7 @@ export type ComputeDiagnostic = typeof ComputeDiagnostic.Type;
 export const ComputeImageMediaType = Schema.Literals(["image/png", "image/svg+xml"]);
 export type ComputeImageMediaType = typeof ComputeImageMediaType.Type;
 
-/** Why an image belongs to this execution, without coupling it to one runtime. */
+/** Capture provenance. A project-file is observed, not proven to be produced by the execution. */
 export const ComputeImageOrigin = Schema.Union([
   Schema.TaggedStruct("runtime-display", {}),
   Schema.TaggedStruct("project-file", {
@@ -441,10 +441,35 @@ export interface ComputeTransportOpenRequest {
   readonly requiredCapabilities: ReadonlyArray<ComputeCapability>;
 }
 
+/**
+ * Optional source facts forwarded with one execution.
+ *
+ * Paths are project-relative claims resolved by the server-owned bridge cwd.
+ * For a dirty file, cell, or selection, `sourceBytesHash` identifies the
+ * submitted `code` bytes; it is not a claim about the whole source document.
+ * A bridge may use a saved file path natively only when `saved` and
+ * `sourceBytesHash` are present and the on-disk bytes prove that identity.
+ * Dirty, cell, and selection submissions remain exact submitted bytes with
+ * their stated diagnostic context.
+ */
+export interface ComputeExecuteSourceContext {
+  readonly kind: "file" | "cell" | "selection";
+  readonly filePath?: string;
+  readonly fileName?: string;
+  readonly sourceBytesHash?: string;
+  readonly sourceRevision?: string;
+  readonly saved?: boolean;
+  readonly startLine?: number;
+  readonly startColumn?: number;
+  readonly endLine?: number;
+  readonly endColumn?: number;
+}
+
 export interface ComputeExecuteRequest {
   readonly requestId: ComputeRequestId;
   readonly expectedGeneration: ComputeSessionGeneration;
   readonly code: string;
+  readonly sourceContext?: ComputeExecuteSourceContext;
 }
 
 export interface ComputeInterruptRequest {
@@ -503,12 +528,62 @@ export interface ComputeTransport {
 }
 
 export const ComputeRuntimeSource = Schema.Literals([
+  "managed",
   "configured",
   "project",
   "path",
   "conventional",
 ]);
 export type ComputeRuntimeSource = typeof ComputeRuntimeSource.Type;
+
+export const ComputeManagedRuntimeSelection = Schema.Literals(["managed", "existing"]);
+export type ComputeManagedRuntimeSelection = typeof ComputeManagedRuntimeSelection.Type;
+
+export const ComputeManagedRuntimeAction = Schema.Literals([
+  "install",
+  "update",
+  "repair",
+  "remove",
+  "use-managed",
+  "use-existing",
+]);
+export type ComputeManagedRuntimeAction = typeof ComputeManagedRuntimeAction.Type;
+
+export const ComputeManagedRuntimePhase = Schema.Literals([
+  "downloading",
+  "installing-python",
+  "installing-packages",
+  "verifying",
+  "removing",
+]);
+export type ComputeManagedRuntimePhase = typeof ComputeManagedRuntimePhase.Type;
+
+export const ComputeManagedRuntimeOperation = Schema.Struct({
+  operationId: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+  action: ComputeManagedRuntimeAction,
+  phase: ComputeManagedRuntimePhase,
+  startedAt: Schema.NonEmptyString.check(Schema.isMaxLength(128)),
+  downloadedBytes: Schema.NullOr(Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))),
+  totalBytes: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
+});
+export type ComputeManagedRuntimeOperation = typeof ComputeManagedRuntimeOperation.Type;
+
+export const ComputeManagedRuntimeStatus = Schema.Struct({
+  /** Labels belong to the reviewed adapter, not to a parallel UI provider switch. */
+  displayName: Schema.optional(Label),
+  description: Schema.optional(ShortText),
+  /** The external installation served by an assisted connection helper. */
+  installationExecutable: Schema.optional(Schema.String.check(Schema.isMaxLength(4096))),
+  installed: Schema.Boolean,
+  generationId: Schema.optional(Schema.NullOr(Label)),
+  selection: ComputeManagedRuntimeSelection,
+  updateAvailable: Schema.Boolean,
+  runtimeVersion: Schema.NullOr(Label),
+  toolkitRevision: Schema.NullOr(Label),
+  operation: Schema.NullOr(ComputeManagedRuntimeOperation),
+  failureMessage: Schema.NullOr(Schema.String.check(Schema.isMaxLength(4096))),
+});
+export type ComputeManagedRuntimeStatus = typeof ComputeManagedRuntimeStatus.Type;
 
 export const ComputeRuntimeProfile = Schema.Struct({
   languageId: ComputeLanguageId,
@@ -520,6 +595,17 @@ export const ComputeRuntimeProfile = Schema.Struct({
 });
 export type ComputeRuntimeProfile = typeof ComputeRuntimeProfile.Type;
 
+/** Filesystem observation only. Presence is not execution or package readiness. */
+export const ComputeRuntimeInstallation = Schema.Struct({
+  executable: Schema.NonEmptyString.check(Schema.isMaxLength(4096)),
+  source: ComputeRuntimeSource,
+  /** Explicit selection is independent of how an installation was discovered. */
+  configured: Schema.optional(Schema.Boolean),
+  version: Schema.NullOr(Label),
+  problem: Schema.NullOr(ShortText),
+});
+export type ComputeRuntimeInstallation = typeof ComputeRuntimeInstallation.Type;
+
 export const ComputeRuntimeReadiness = Schema.Literals([
   "ready",
   "missing-requirement",
@@ -528,12 +614,36 @@ export const ComputeRuntimeReadiness = Schema.Literals([
 ]);
 export type ComputeRuntimeReadiness = typeof ComputeRuntimeReadiness.Type;
 
+/**
+ * One bounded package observation made by a language adapter while it verifies
+ * a runtime. Package names and versions are transient diagnostics: the durable
+ * execution identity remains the environment fingerprint rather than a second
+ * package database in compute history.
+ *
+ * A null version means the adapter deliberately checked for the package and
+ * did not find it. Adapters do not enumerate an entire environment merely to
+ * populate this list; they report only requirements used by reviewed product
+ * capabilities.
+ */
+export const ComputeRuntimePackage = Schema.Struct({
+  name: Slug,
+  version: Schema.NullOr(Label),
+});
+export type ComputeRuntimePackage = typeof ComputeRuntimePackage.Type;
+
 /** Why a runtime cannot be used, in terms a user can act on. */
 export const ComputeRuntimeVerification = Schema.Struct({
   profile: ComputeRuntimeProfile,
   readiness: ComputeRuntimeReadiness,
   missingRequirements: Schema.Array(Label),
   message: Schema.NullOr(ShortText),
+  /** Discovery is passive; only explicit verification starts a licensed runtime. */
+  connection: Schema.optional(Schema.Literals(["detected", "verified"])),
+  // Optional on decode so retained fixtures and older attached clients remain
+  // readable while current adapters always return the bounded observations.
+  packages: Schema.Array(ComputeRuntimePackage)
+    .check(Schema.isMaxLength(128))
+    .pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
 });
 export type ComputeRuntimeVerification = typeof ComputeRuntimeVerification.Type;
 
@@ -601,6 +711,10 @@ export class ComputeRuntimeError extends Schema.TaggedError<ComputeRuntimeError>
 export interface ComputeLanguageAdapter {
   readonly languageId: ComputeLanguageId;
   readonly transportKind: ComputeTransportKind;
+  /** Settings discovery must not spawn a runtime or import its execution bridge. */
+  readonly listInstallations?: (
+    request: ComputeDiscoveryRequest,
+  ) => Effect.Effect<ReadonlyArray<ComputeRuntimeInstallation>, ComputeRuntimeError>;
   readonly discover: (
     request: ComputeDiscoveryRequest,
   ) => Effect.Effect<ReadonlyArray<ComputeRuntimeProfile>, ComputeRuntimeError>;

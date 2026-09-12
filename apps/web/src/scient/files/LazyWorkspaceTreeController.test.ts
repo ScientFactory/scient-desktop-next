@@ -4,7 +4,13 @@ import type {
   ProjectDirectoryView,
   ProjectListDirectoryResult,
 } from "@t3tools/contracts";
+import { EnvironmentId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
+
+import {
+  refreshProjectFiles,
+  subscribeProjectFilesRefresh,
+} from "~/components/files/projectFilesQueryState";
 
 import {
   LazyWorkspaceTreeController,
@@ -65,6 +71,30 @@ function makeController(
 }
 
 describe("LazyWorkspaceTreeController", () => {
+  it("reveals generated files when a known workspace write requests refresh", async () => {
+    const environmentId = EnvironmentId.make("compute-workspace-refresh-test");
+    let generated = false;
+    const harness = makeController(async () =>
+      generated ? complete(file("analysis.py"), file("result.csv")) : complete(file("analysis.py")),
+    );
+    let refreshed: Promise<void> | null = null;
+    await harness.controller.start();
+    const unsubscribe = subscribeProjectFilesRefresh(environmentId, "/compute-refresh-test", () => {
+      refreshed = harness.controller.refresh();
+    });
+    try {
+      expect(harness.model.getItem("result.csv")).toBeNull();
+      generated = true;
+      refreshProjectFiles(environmentId, "/compute-refresh-test");
+      expect(refreshed).not.toBeNull();
+      await refreshed;
+      expect(harness.model.getItem("result.csv")).not.toBeNull();
+    } finally {
+      unsubscribe();
+      harness.destroy();
+    }
+  });
+
   it("loads only the root and branches the user expands", async () => {
     const loadDirectory = vi.fn(
       async (relativeDirectory: string): Promise<ProjectListDirectoryResult> =>

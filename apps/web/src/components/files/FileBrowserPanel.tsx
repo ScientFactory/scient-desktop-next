@@ -47,7 +47,11 @@ import { PIERRE_TREE_UNSAFE_CSS, pierreTreeStyle } from "~/pierre-tree-theme";
 
 import { createFileTreeDragMentionController } from "./fileTreeDragMention";
 import { areAllDirectoriesExpanded, setAllDirectoriesExpanded } from "./fileTreeExpansion";
-import { refreshProjectEntriesQuery, setProjectFileQueryData } from "./projectFilesQueryState";
+import {
+  refreshProjectEntriesQuery,
+  setProjectFileQueryData,
+  subscribeProjectFilesRefresh,
+} from "./projectFilesQueryState";
 
 interface FileBrowserPanelProps {
   environmentId: EnvironmentId;
@@ -476,6 +480,11 @@ export default function FileBrowserPanel({
     refreshEntries();
     onRefreshSelectedFile?.();
   };
+
+  useEffect(
+    () => subscribeProjectFilesRefresh(environmentId, cwd, refreshEntries),
+    [environmentId, cwd, refreshEntries],
+  );
 
   useEffect(() => {
     if (!selectedPath) {

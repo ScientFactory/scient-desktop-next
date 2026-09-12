@@ -5,9 +5,42 @@ Owner: Yaacov
 Created: 2026-08-18
 Purpose: Defines the architecture, domain model, transport boundary, persistence semantics, delivered foundation phases, and post-baseline capability roadmap for stateful interactive scientific compute sessions in Scient. Written as a companion to the accepted `scient-analysis-runtime-foundation.md`, which governs one-shot terminal execution.
 Doc type: Architecture decision record
-Implementation maturity: Phases 1-4 and the figure-viewing extension are committed and locally qualified on macOS; the Phase 5B shared-representation foundation is a locally qualified child candidate
+Implementation maturity: The initial Python product and shared-representation foundation reached main through PR #129; the continuation adds optional managed Python, stateful MATLAB, and bounded table/Plotly presentation locally, with final product and platform qualification pending
 Product maturity: Phase 4 core workflow and the figure-viewing extension are owner-accepted locally
-Release maturity: Not approved
+Release maturity: The continuation is not approved for release; historical baseline receipts below do not qualify it
+
+## Current implementation boundary
+
+The local continuation builds on the merged Python baseline rather than replacing
+its session, history, or project-file ownership. It implements:
+
+- optional Scient-managed Scientific Python with exact-runtime Toolkit assessment,
+  explicit selection, refresh, update, repair, cancellation, and private removal;
+- stateful MATLAB through a language binding, shared bridge transport, file actions,
+  results/history, and bounded variables, while retaining fresh-process `AnalysisRun`;
+- bounded scalar-table previews and reuse of Scient's Plotly renderer;
+- runtime-change recovery, scoped file refresh, cancellation-safe setup, and
+  project-owned bounded session notifications; and
+- the [independent-tabs continuation](#next-pass-independent-compute-tabs): lazy
+  file-owned sessions, concurrent Python/MATLAB contexts, explicit-close cleanup,
+  native source identity, MATLAB tables/FIG snapshots, and read-only agent inventory.
+
+These are implementation claims, not renewed visual or cross-platform acceptance.
+The managed-runtime owner and promotion gates are in
+[the Toolkit foundation](scient-compute-toolkit-foundation.md). Positive MATLAB
+desktop execution after the candidate's macOS permission prompt, graphical
+setup/removal and session recovery, and packaged/platform checks remain open.
+Native notebook authoring, portable stateful-result promotion, richer data
+inspection, and agent execution/install authority remain separate tracks below. Existing notebook
+contract experiments are not an integrated notebook product.
+
+[Runnable Python/MATLAB blocks in chat and Markdown](#follow-up-runnable-code-blocks-in-chat-and-markdown)
+are a recorded follow-up, not implemented behavior or part of the current setup
+review. That section owns the bounded scope, prerequisites and acceptance gates.
+
+The dated qualification section below records the earlier baseline. Consult the
+exact candidate's test receipts for current integration status; do not infer that
+old green checks qualify a later merge.
 
 ## Planning Posture
 
@@ -105,6 +138,10 @@ interactive, active-HTML, widget, notebook, or additional-language renderers.
 
 It coordinates with, but does not duplicate:
 
+- `scient-compute-toolkit-foundation.md`, which records the local Phase 5A
+  Toolkit-inspection and managed-Python activation candidate plus the
+  distribution, lock, ownership, UI, update, and agent-authority decisions
+  that must remain explicit before installation is exposed;
 - `scient-analysis-runtime-foundation.md`, which owns one-shot terminal
   execution, the shared `@scientfactory/execution` kernel, and the
   `AnalysisRun` lifecycle;
@@ -1096,6 +1133,60 @@ Not:
 
 ---
 
+### 9.7 Current shared-runtime implementation boundary
+
+The local MATLAB integration and bounded table/Plotly candidate (2026-08-31)
+extends the current bindings; it does not replay the older donor's coordinator
+or replace `prepareLaunch` with another lifecycle. This describes implementation,
+not product, packaged-app or cross-platform acceptance.
+
+- One coordinator retains admission, serialized execution, cancellation,
+  generations, persistence and retained output. Bindings own discovery, exact
+  launch identity, diagnostics and capabilities; they do not own a second store
+  or agent authority. The separately owned workspace-binding migration must
+  compose with this boundary explicitly.
+- `ComputeBridgeTransport` is the existing Jupyter bridge transport renamed for
+  its shared role. Its bounded frames, correlation, process supervision and
+  current MIME handling remain intact. The runtime registry acquires Python
+  and MATLAB independently; an incomplete bridge disables only that binding.
+- `ComputeFileActions` and `ScientComputeFileSurface` share compact controls,
+  settings/refresh access, split layout and exact source ranges. Descriptors
+  supply `.py` / `.m`, labels and `# %%` / `%%` markers. Existing Python split/view
+  storage keys remain stable. Switching away from another live language still
+  requires an explicit stop; there is no implicit runtime fallback.
+- Python owns Jupyter and its optional private installation through the
+  [Toolkit lifecycle](scient-compute-toolkit-foundation.md). MATLAB remains
+  user-installed and licensed. Its compatible Python Engine host is transport
+  infrastructure, not a requirement to enable Python Compute or install Jupyter.
+  Scient does not install system packages to repair MATLAB.
+- MATLAB verification records both MATLAB and Engine-host identities; launch
+  rechecks the selected installation and actual Engine root. Its isolated host
+  disables bytecode writes. The adapter owns native startup timeout/cancellation,
+  Engine quit/interruption, controlled temporary scripts and local functions,
+  identity-checked helpers, bounded variables/PNG figures and diagnostics.
+  Stream callbacks apply back-pressure. An uncertain quit cannot start another
+  engine. Runtime PID may be null; the supervised bridge's owned process tree,
+  not a guessed MATLAB PID, is cleanup authority.
+- The released one-shot AnalysisRun remains under **Fresh-process MATLAB runs**,
+  including artifacts and **Save to project**. Live Compute supplements that
+  workflow; retained live results do not imply independent reproducibility.
+
+Qualification includes fake failure/identity/containment tests, bridge protocol
+tests, and opt-in real lifecycle/stress tests. From `apps/server`, select the
+licensed installation explicitly with `SCIENT_TEST_MATLAB=/absolute/path/to/matlab`
+for `MatlabComputeProduct.integration.test.ts`. MATLAB may spawn graphics helpers
+even with `-nodesktop`; reserve the shared Mac before running it. Real Python
+tests similarly require an exact `SCIENT_TEST_PYTHON`; managed installation tests
+require `SCIENT_TEST_MANAGED_PYTHON=1` and use temporary state. macOS/R2026a evidence
+does not qualify other releases, licensing conditions, Windows/Linux, remote
+clients or packaged installations. Temporary QA evidence records the tested
+head and remaining gates; backend success is not visual acceptance.
+In particular, macOS may attribute MATLAB's normal Documents-folder access to
+the owning Scient app. A pending OS consent prompt can block Engine startup;
+do not bypass it with permission resets, alternate process launchers, or a
+different user home. Test the actual app identity and its timeout/cleanup path,
+not only a terminal-launched Engine.
+
 ## 10. Output Model
 
 ### 10.1 Initial output types
@@ -1199,6 +1290,32 @@ content is upgraded to accepted active authority.
 The initial bridge normalizes Jupyter messages correctly even when the client
 does not yet render every representation. Later adapters may produce the same
 neutral representation contracts without using Jupyter.
+
+#### Current bounded table and Plotly presentation
+
+The local 2026-08-31 candidate renders inline
+`application/vnd.dataresource+json` through one scalar, read-only table preview:
+at most 1,000,000 source characters, 100 displayed rows, 24 columns and 512
+characters per displayed cell. Numeric alignment and ordinary React text avoid
+HTML execution. Unsupported or malformed payloads keep the existing fallback.
+Resource-backed JSON is retained but not fetched by this renderer.
+
+Python lazily registers a pandas DataFrame formatter without importing pandas at
+startup, installing packages or adding user globals. It supports pandas 2/3 type
+module names, caps output at 100 rows, 20 data columns plus index, bounded scalar
+cells and 512 KiB serialized data, and marks truncation. Unsupported shapes fall
+back. Kernel restart reapplies the formatter.
+
+`application/vnd.plotly.v1+json` reuses the existing lazy Plotly card and its
+schema limits, graphics quota, theme, export and error handling. Python defaults
+Plotly to its MIME renderer, respecting explicit renderer overrides. This does
+not install Plotly or add it to the locked Toolkit. MATLAB does not acquire a
+Plotly library merely because the renderer is language-neutral.
+
+Both consume the existing display-update/clear projection and retained record;
+neither adds a resource store or authority scheme. PNG/SVG/plain fallback remains
+unchanged. Active HTML, widgets, deep live-data inspection and new agent
+installation authority remain outside this slice.
 
 ### 10.3 Completion correlation
 
@@ -1458,6 +1575,17 @@ part of the architecture after its disposable plan is removed:
 - Live subscription events are bounded notifications over canonical durable
   state. A slow subscriber may observe a sequence gap and must reread durable
   state; it cannot apply uncertain deltas or make the kernel wait.
+  `ComputeSessionNotifications` partitions its 512-event sliding buffers by the
+  coordinator's server-side owner key, not by portable session/execution IDs.
+  The current coordinator supplies its project key; workspace-binding integration
+  must supply the resolved binding key at the same four publish/subscribe calls.
+  Channels are released when their last subscriber closes. Each subscription's
+  snapshots and first live delta start at zero, so even an initially empty
+  project detects dropped initial events. Cursors are not durable identities or
+  globally comparable offsets. The existing gap path rereads sessions, executions
+  and outputs, then resubscribes; it never re-executes scientific code. No wire
+  event variant or polling loop is added. A newer client receiving an old server's
+  nonzero first delta conservatively resynchronizes using its stamped snapshots.
 - Storage reclamation remains an unwired primitive until a product retention
   policy is accepted. When invoked, it preserves execution metadata and
   journals what was removed before deleting disposable bytes.
@@ -1721,6 +1849,10 @@ An active execution is not stopped because the window loses focus, the app
 enters the background, the machine switches to battery, or no client is
 momentarily connected.
 
+Explicit closure of an owning Compute tab is different from losing visibility or
+connectivity: the [next-pass interaction contract](#next-pass-independent-compute-tabs)
+requires stopping that tab's session, while preserving other independent sessions.
+
 ### 18.2 Idle sessions
 
 Idle shutdown applies only when:
@@ -1745,6 +1877,11 @@ Candidate defaults:
 - One active execution per session.
 - 16 queued executions per session.
 - Bounded output and artifact storage.
+
+For the 2026-09-10 continuation, qualify the
+[independent Compute tab direction](#next-pass-independent-compute-tabs) before
+lifting the current product restriction. These historical Phase 3 defaults do
+not prescribe a two-tab or one-per-language limit.
 
 ### 18.4 Server shutdown
 
@@ -2872,11 +3009,13 @@ second compute or project-file system:
    never save that migration silently; the user can save or discard it. A file
    that already claims 4.5 or later but contains missing, malformed, or
    duplicate IDs fails validation rather than being silently repaired.
-8. Bind notebooks to bounded live sessions through the existing
-   `ComputeSession` coordinator. Lift the one-live-project-session UI policy only
-   after resource and idle-retention gates are accepted. Closing a notebook
-   cannot silently kill its session, and reopening a notebook cannot start a
-   kernel or replay code.
+8. Bind notebooks through the existing `ComputeSession` coordinator and the
+   [independent Compute context direction](#next-pass-independent-compute-tabs).
+   Ordinary file tabs now motivate multi-session work before notebooks; notebooks
+   reuse it instead of introducing another coordinator. Resource/lifecycle gates
+   still apply. Apply the shared owning-tab close contract, after unsaved-document
+   resolution; merely hiding its view is not close. Reopening cannot start a kernel
+   or replay code.
 9. Keep common widgets and comms out of the authoring and basic-execution core.
    Phase 6D may reuse official widget implementations only through a
    session-scoped Scient comm adapter, bounded state and message handling,
@@ -2953,16 +3092,17 @@ discarding notebook output changes the document buffer, never immutable compute
 history. Notebook trust is tied to the exact saved content revision and does
 not grant active HTML or widget authority after the file changes.
 
-Full notebooks are also the first accepted reason to move beyond Phase 4's
-single live project-session UI policy. Ordinary source files may continue to use
-one default project session, while each notebook binds explicitly to one bounded
-live `ComputeSession`, by default a notebook-specific session. A user may later
-attach another notebook to an existing compatible session only through an
-explicit action. The binding is operational state, not hidden notebook source;
-the notebook's kernelspec remains a reviewed hint. Closing a notebook does not
-silently destroy its runtime, and every live notebook session remains visible
-and stoppable through the project compute surface. Resource limits and idle
-retention must be accepted before enabling several live sessions.
+The 2026-09-10 owner clarification makes ordinary independent Compute tabs the
+reason to move beyond Phase 4's single live project-session policy; this must
+not wait for full notebooks. See the [next-pass direction](#next-pass-independent-compute-tabs).
+Each notebook will reuse that binding, by default with an independent context.
+A user may later attach another notebook to an existing compatible session only
+through an explicit action. The binding is operational state, not hidden notebook
+source; the notebook's kernelspec remains a reviewed hint. An owning Compute tab
+uses the shared close/stop contract after document-save resolution; a non-owning
+viewer does not stop another tab's session. Every live session remains visible
+and stoppable. Resource/lifecycle acceptance remains required; automatic idle
+eviction of an in-memory namespace is not implied.
 
 Notebook output projection is document state, not execution authority.
 Append-only compute facts retain MIME bundles and display/update/clear events;
@@ -3163,6 +3303,368 @@ baseline gap-recovery/output-bound/process-cleanup guarantees, and acceptance of
 the operation envelope. It need not wait for notebooks, every renderer, or every
 language, but later capabilities must use the same actor and provenance model.
 
+#### Next pass: Independent Compute tabs
+
+**Status (2026-09-10):** Local implementation candidate, automatically qualified and
+ready for user review. The earlier single-session policy below describes historical baselines,
+not this candidate. The design/acceptance requirements in this section remain the
+review checklist; implementation does not itself establish visual or platform acceptance.
+
+##### Implemented ownership and lifecycle boundary
+
+`ComputeSessionService` remains the single coordinator. Its existing per-session
+queue, mutation lease, process scope, generation, storage and notification paths
+now admit independent sessions, rather than one live session per project. No second
+kernel manager or generic workflow scheduler is introduced.
+
+- A durable `starting` record reserves the supplied id before runtime discovery.
+  Startup runs in the service scope, separately from the requesting RPC, so a lost
+  response does not lose ownership. Retrying the same immutable request reuses it;
+  a terminal lifetime's id cannot be reused. The stored requested selector is not
+  presented as a verified runtime identity while startup is pending.
+- The short host admission lock protects reservation and managed-runtime mutation,
+  not slow startup. Startup/explicit native verification share a bounded semaphore.
+  Pending owners and verification counters prevent removal during use; verification
+  does not create project history or an invisible persistent session.
+- Each session's dispatch lease orders queue-to-wire submission against stop/restart.
+  Ancillary file observation has a bounded wait, and an ambiguous execute send
+  times out fail-closed. Variable inspection cannot hold the lifecycle mutation lease.
+- Stop has an independent client command lane and transport shutdown gate. It settles
+  all pending execution records, including work drained by a concurrent restart, and
+  completes accepted cleanup even if the caller disconnects. Owned process cleanup
+  precedes retirement and terminal close acknowledgement. Late transport events
+  cannot resurrect stopped records. Failed cleanup must not be interpreted as an
+  invitation to delete unrelated processes or user installations.
+- Listing sessions includes every live owner even when it is older than the bounded
+  recent-history window. Runtime settings affect future starts, not another context's
+  running interpreter or namespace.
+
+**Host policy:** `maximumLiveSessions` defaults to `max(1, min(16, floor(host RAM /
+4 GiB)))`; `maximumConcurrentStarts` defaults to 2. Operators can override them with
+positive integer `SCIENT_COMPUTE_MAX_LIVE_SESSIONS` and
+`SCIENT_COMPUTE_MAX_CONCURRENT_STARTS`. Reservations count across projects until owned
+cleanup finishes. Explicit connection verification shares startup slots but does not
+consume a persistent session reservation. Reaching capacity returns typed
+`capacity-reached`; it never evicts a namespace. This is coarse admission protection,
+not an open-tab limit, a resource sandbox, a guarantee that heavy user code fits, or
+a MATLAB-license entitlement check.
+
+The initial macOS measurements motivating conservative headroom were about 0.1 GiB
+idle per Python kernel and 1.1–1.4 GiB per MATLAB engine. Native qualification uses
+bounded simultaneous work and exact test-owned process checks; it must not deliberately
+exhaust the user's memory or stop unrelated terminal/IDE/MATLAB processes.
+
+`ConcurrentCompute.integration.test.ts` is gated by explicit `SCIENT_TEST_PYTHON` and
+`SCIENT_TEST_MATLAB` paths. It uses disposable project/state directories and never
+installs software. Deterministic service/transport tests separately cover many queues,
+admission, pending startup, disconnects, stop/restart races and verification/removal.
+These are automated qualification mechanisms, not a claim of completed visual review.
+
+##### Implemented source, presentation, and client boundary
+
+- The small Scient-owned persisted context store connects an ordinary file or an
+  explicitly new Compute tab to its session ID and restart generation. It validates
+  storage even on same-version hydration. Existing surfaces without context IDs are
+  non-owning project/history views; no migration invents past ownership.
+- Run is an event action. Observation only reconciles the exact owner with server
+  facts; mount/theme/reload never launches or replays code. Snapshot merging respects
+  generation, activity time and terminal facts, so an older exact-id cache cannot
+  overwrite newer events. A restored pending start can be explicitly retried with
+  the same id. A definitive pre-admission capacity rejection releases only that
+  pending reservation; an interrupted/unknown response does not imply no worker.
+- An explicit standalone context also offers **Run saved file…** through the existing
+  project file picker. It reads fresh disk bytes, validates language and exact owner
+  again after the asynchronous read, and submits through the same document envelope.
+  It does not adopt an ordinary file tab or include that editor's unsaved buffer.
+  This is an additional standalone entry point, not a new mandatory step for file Run.
+- The standalone tab's compact **Project compute history** action opens the existing
+  non-owning project view. Its selector reaches retained sessions after an owner starts
+  a new lifetime, and can explicitly manage the selected live session. Closing that
+  history view stops nothing; it cannot create an unowned session. Ordinary file
+  ownership and unsaved-close safeguards remain on the editor path.
+- Session controls distinguish owners with a file path when known and a short ID;
+  these labels are not authority. Stop/restart confirmation captures the full selected
+  session and generation instead of resolving whichever live session is newest later.
+- Close uses one exact-session coordinator with one bounded generation refresh.
+  It leaves failed cleanup reachable and never treats a missing record as proof
+  that a concurrently submitted start is dead. Pending-save checks run before close
+  and again after asynchronous shutdown; newly edited files stay open. Stop remains
+  available during startup/restart. Switching views is not close.
+- Optional `sourceContext` travels on the existing execute envelope. Saved full-file
+  runs use canonical native paths, preserve sibling/local-function behavior, and
+  validate the submitted source hash. Python compiles the bounded validated bytes;
+  cells/selections retain relative traceback lines for the existing adapter mapping.
+  MATLAB uses native `run` for saved full files whose stem is a valid MATLAB
+  identifier. Numbered, punctuated, keyword, and other non-invocable filenames use
+  the same trusted temporary submission path as console/dirty/cell work, because
+  MATLAB's `run` evaluates the stem and otherwise fails before reading the code.
+  The fallback keeps the project working directory and exact submitted bytes without
+  writing an alias into the project. No autosave or source rewriting is added.
+  MATLAB's pre/post file checks catch observable conflicts, but cannot prove the
+  bytes consumed during an arbitrary external write-and-restore race; this is an
+  explicit native-file limitation, not atomic provenance.
+- MATLAB table/timetable capture bounds row/column selection before text/row-time
+  conversion and emits the neutral table representation. Unsupported nonscalars,
+  huge values and unsafe integers have bounded explicit representations/warnings.
+  This is a preview, not a complete data browser or lossless table conversion.
+- MATLAB figure identity is scoped to a graphics object's lifetime and session
+  generation, not reusable figure numbers or update-list positions. Changed-only
+  captures compare visual PNG content, ignoring volatile serialization metadata.
+  A retained FIG accompanies each emitted visual snapshot; nonvisual-only changes
+  do not continuously serialize the native workspace. Closed/missing figures retain
+  the prior viewer image rather than adopting another context or reused number.
+- Existing ordinal figure references follow only the same session lifetime; native
+  ID references additionally require the exact generation/display ID. Legacy runtime
+  references without session proof fail closed; project-file/snapshot references
+  retain their existing meanings. A standalone image update is projected as its
+  complete retained snapshot without changing generic notebook display semantics.
+  The compact FIG action downloads only an authorized, bounded retained resource;
+  it does not evaluate native files or embed an interactive MATLAB desktop.
+- Concurrent sessions share project files. File observation is labeled as observation,
+  not producer proof. Normal terminal/IDE Python and user MATLAB installations are
+  not adopted, modified or stopped by Compute ownership cleanup.
+- `scient_compute_inventory` exposes the same lightweight Settings inventory
+  through explicit `compute:read` capability checks. It takes no code, project,
+  session or install input and grants no execute/install/attach authority.
+
+The temporary QA folder's `NEXT_PASS_QA.md` is the current manual review guide.
+Earlier `RESULTS.md` observations and phase-one receipts remain historical evidence,
+not acceptance of this implementation. Native proof in this pass is macOS arm64
+with MATLAB R2026a and the selected Python hosts; other platforms/licensing limits
+remain separate qualification gates.
+
+**Outcome:** Many ordinary Compute tabs can run independently, including several
+Python tabs, several MATLAB tabs, and mixtures. Two is a minimum test case, not a
+product limit; one session per language is not the solution. Opening/switching
+tabs stays fast and never executes code. This supersedes stop-and-switch as the
+solution to cross-language use and moves multi-session work ahead of notebooks.
+
+**File opening:** Keep one editor path. Opening a `.py` or `.m` file is a lightweight
+normal file tab. Run gives that logical tab its own Compute context and supported
+results without a duplicate editor or mandatory "open as" choice. Switching back to
+Code hides results, not execution ownership. An independent session tab and a plain
+history/file/figure viewer must have distinct ownership even if they show the same file.
+
+An unrun source file opens in Code regardless of another file's current view. Choosing
+Split or Results is passive and shows only a quiet `Run` action with `to see results.`;
+that action delegates to the same file-run command as the toolbar rather than creating
+a second execution path.
+Run reveals Results by default, or Split when Split was the last explicitly selected
+results layout. This happens directly from the Run action; a delayed startup or result
+cannot later override a view the user chose. Code does not replace the remembered
+results layout, and neither layout selection nor opening a file starts a runtime.
+
+Reuse the existing file-tab surfaces and `ComputeSession` service. Distinguish a
+lightweight view, its stable Compute-context binding, and a lazily started live
+session. This is an ownership distinction, not permission for three new frameworks.
+Prefer existing session IDs and restart generations plus the smallest durable
+Scient-owned binding. A mount, theme, source path alone, or the first live project
+session cannot identify an independent context. Duplicate views/reconnects of
+one context reuse it; a deliberately separate context has separate state.
+
+The existing per-session process scopes, queues, locks, storage, command keys and
+event projections are reusable. Execute sequentially within one namespace and
+concurrently across namespaces. Do not pool one engine by swapping variables:
+imports, native libraries, figures and working-directory state are process-wide.
+MATLAB supports [multiple independent engines](https://www.mathworks.com/help/matlab/matlab_external/start-the-matlab-engine-for-python.html);
+actual host capacity and license availability still require qualification.
+
+Before lifting admission, qualify these seams together:
+
+- **Ownership and lifecycle:** Bind Run, variables, results, interrupt, restart
+  and stop to the intended context/session/generation. Allocate idempotently;
+  never attach to another actor's session implicitly. Explicitly closing an owning
+  Compute tab stops its running code, cancels queued work, closes its process tree,
+  and preserves recorded history. This supersedes the earlier proposal to leave a
+  closed tab's session running. Closing an independent tab, history or non-owning viewer does
+  not stop this context. Switching/hiding/reloading is not close and must not stop
+  work. Still-open mirrored views reflect an explicit context stop rather than
+  keeping it alive by subscription count. Restoring views never replays code; opening
+  an explicitly closed tab never resurrects its engine. Preserve existing history
+  with a conservative unbound/legacy presentation; do not guess historical ownership
+  from a filename. Existing unbound live sessions remain reachable for explicit
+  management during migration; new tabs do not silently adopt them.
+- **Addressable startup and bounded Stop:** The reviewed service registers sessions
+  after slow transport open/handshake, leaving pending startup unreachable by Stop.
+  Reserve the existing session identity before slow work, with cancellation and
+  recovery-safe ownership; prevent late workers after close. The client restart/stop
+  serial lane and transport command gate can delay Stop behind a restart. Preserve
+  generation checks while making termination bounded and preemptive across both layers.
+  Also fence queue selection/send against stop/restart: prove atomic ordering, not
+  just a status check before asynchronous dispatch. Prefer existing session state,
+  command configuration and scoped cleanup; no new public cancel-start API, generic
+  scheduler rewrite or additional epoch/refcount registry without demonstrated need.
+- **Result correctness:** The current figure follower selects the latest project
+  session, and runtime-display identity uses project/language/path/ordinal. Make
+  runtime following context-aware, keep immutable execution snapshots, and preserve
+  old links without rebinding them to an unrelated context. The project-image
+  observer's before/after scan cannot prove which concurrent or external process
+  wrote a file. Keep observed workspace changes distinct from attributed runtime
+  outputs. Preserve access to unambiguously identified files without fabricating
+  producer ownership; serializing all user code or copying projects is not a fix.
+- **Capacity and responsiveness:** Many open tabs do not imply many running engines.
+  Measure process and startup costs, then use the smallest configurable host-wide
+  admission policy justified by that evidence, not a hard-coded two-session ceiling.
+  Account for concurrent starts across projects and release failed reservations.
+  Do not evict another tab's variables silently. Admission is not a memory sandbox.
+  Preserve managed-runtime removal/repair exclusion for all affected sessions.
+  The current global start lock spans launch/readiness and also protects runtime
+  mutation. It delays unrelated starts, but currently prevents pending-start/removal
+  races. Narrow slow-start coordination with pending-owner protection, not by simply
+  deleting the lock. Startup coordination must not become global execution
+  serialization. Keep inactive views light and keyed subscriptions
+  shared; active sessions must remain discoverable beyond bounded history pages.
+
+**Recovery is part of the core interaction contract, not later polish:**
+
+- Healthy screens stay quiet. Reuse compact status/session selectors, Run and the
+  existing contextual menu; no new dashboard or persistent explanatory cards.
+  Identify the current session by language/file/context and activity, not just time.
+  Navigation to a session must work outside Results, including narrow/Code-only views.
+  Keep runtime Settings access distinct from opening/managing a running session.
+- Every blocked Run has a short accessible reason and a reachable next action.
+  Hover/focus can explain; click/tap recovery uses a proper menu or popover. Do not
+  disable the only recovery trigger, hide it at narrow widths, or rely on `title`
+  on a disabled button. Do not put interactive actions inside a tooltip. A recovery
+  trigger is not execution permission and must have honest accessible semantics.
+- Derive availability, reason and eligible actions together for file/cell/selection,
+  keyboard/gutter actions and empty Results. Reuse typed server errors when a race
+  invalidates client state; do not parse prose errors or create a general workflow
+  framework. Target IDs/generations, revalidate destructive actions and preserve
+  source buffers. An unrelated active language is not a blocker after migration.
+  If a connected older server cannot support concurrency, expose that capability
+  limit and reachable authorized recovery instead of claiming support or borrowing
+  and stopping another session implicitly.
+- Distinguish queued work, pending lifecycle operations, capacity, runtime/bridge
+  absence, optional packages, source conflicts and connection loss. Offer the
+  smallest supported action: view the session/queue, refresh/reconnect, setup, or
+  explicit interrupt/restart/stop. Do not advertise unsupported recovery. Interrupt
+  is not resumable Pause and cannot roll back user-code side effects. Do not mistake
+  silence for unresponsiveness, optional imports for broken runtimes, or display a
+  "Run this file" empty state while making Run unreachable.
+- Handle close through explicit close intent and the existing pending-save flow,
+  not React effect cleanup. Cancelled unsaved-close leaves execution intact. Cover
+  X/keyboard and bulk close. An accepted close during startup must reap late workers
+  and release reservations. Retain a compact reachable Closing/error state until
+  shutdown is known; if disconnected, never claim that hiding the tab stopped code.
+  No extra confirmation solely for having Compute; preserve real destructive/save
+  safeguards. Do not redesign upstream tab infrastructure to implement this policy.
+
+**Coexistence with Python development:** Opening/editing files must not start a
+runtime, modify a project environment, change shell configuration/PATH, or install
+packages. Compute stop/remove affects only its owned processes/files, never a
+terminal, IDE, debugger, system Python or unrelated MATLAB desktop. Preserve selected
+runtime identity and existing source-save conflict protections. Separate kernels
+can share installed packages, CPU/RAM and project files: no silent mutation of
+system/project environments, no automatic `.venv` takeover, and no promise of a
+filesystem/resource sandbox. Explicit package changes require appropriate authority
+and handling of affected sessions. Normal Python development remains a qualification
+case, not an assumption of zero interference from arbitrary user code.
+
+**Gate:** Parameterized many-session tests, same/different-language native runs,
+duplicate starts and reconnects, per-session interruption/restart, runtime removal
+races, process cleanup, event overflow/recovery, same-file and same-figure collisions,
+external project-file writers, retained-history compatibility, and many tabs whose
+runtimes have never started. Increase native stress within measured safe host capacity,
+not by deliberately exhausting memory. Source inspection is not concurrency qualification.
+Include close-during-start/run/queue/restart, failed/offline close and reconnect,
+cancelled unsaved-close, mirrored views, all close entry points, keyboard/touch/hover
+recovery at narrow widths, and concurrent ordinary terminal/IDE Python work.
+Use deterministic barriers for pending startup, queue-to-send and restart/stop races;
+prove no late launch/dispatch, terminal-history corruption or collateral shutdown.
+Native hard-stop cleanup requires its own proof: separate Python kernel sessions and
+MATLAB Engine shutdown cannot be assumed fully reaped from bridge-group exit alone.
+Add internal process ownership only as required by those results, not a public PID API
+or broad process-name cleanup. Keep source-confirmed risks distinct from reproduced failures.
+
+Deliver binding, owned close/stop, recoverable controls, admission and output ownership
+as a coherent gate before enabling parallel Run. Multiple visible tabs alone do not
+satisfy it. Keep the existing renderer/kernel architecture; a new database,
+distributed scheduler, automatic workspace snapshotter, full notebook UI,
+or general package manager is not a prerequisite. The temporary QA project's
+`stress-suite/NEXT_PASS_PROPOSAL.md` holds case-level evidence links and candidate
+implementation steps; this ADR owns the durable direction.
+
+#### Follow-up: Runnable code blocks in chat and Markdown
+
+**Status:** Direction recorded for later implementation; not implemented or
+authorized to start by this note. Re-evaluate the concrete design against the
+then-current code and owner review rather than treating this proposal as fixed.
+
+**Outcome:** A user can read an explanation, explicitly run its Python or MATLAB
+code block, and see supported results directly below it. This is a compact entry
+point to shared Compute, not another execution engine or a notebook product.
+This section owns the desktop follow-up; the broader
+[computing roadmap](https://github.com/ScientFactory/Scient/blob/main/docs/planning/scientific-computing-and-data-analysis-roadmap.md)
+remains the proposed cross-product direction. Do not create competing runnable-
+block plans in the chat, Markdown, or runtime-setup documentation.
+
+**Sequence:** First finish owner review and corrections of the
+[Python/MATLAB setup pass](scient-compute-toolkit-foundation.md#qualification-and-next-boundary).
+Then qualify the continuation's phase-two independent-context and figure-
+identity behavior needed by inline execution. Those local continuation phases
+are not the historical foundation Phases 1–3 in this ADR. This is a separate
+bounded follow-up, not an addition to the current phase-one acceptance checklist
+or an automatic change to phase-three delivery. It need not wait for a complete
+notebook product, every output renderer, or retirement of the older analysis path.
+
+The first slice should provide:
+
+- a small Run action on ordinary Python/MATLAB code blocks, Stop while running,
+  and bounded inline results with access to existing expanded viewers/history;
+- predictable binding to an eligible user-owned Compute context and its selected
+  runtime/environment, without implicitly borrowing the first live session or
+  stopping another context when the language differs;
+- an actionable path to the existing setup/connection settings when the selected
+  runtime or required packages are unavailable; and
+- existing supported text, diagnostics, images, table and Plotly representations,
+  according to what the language adapter actually produces. Unsupported outputs
+  keep a truthful fallback or an authorized artifact link where one exists.
+
+Preserve these boundaries:
+
+1. **Shared execution and presentation.** Chat and Markdown consume one reusable
+   runnable-block controller/view through their existing Scient-owned seams.
+   Reuse server execution, queueing, interruption, limits, durable outputs and
+   renderer selection. Extend a common renderer when justified instead of adding
+   chat-only or MATLAB-only result systems. No per-block runtime processes.
+2. **Explicit authority.** A click authorizes that code's execution in the selected
+   project/server environment, not a sandbox. Opening, scrolling, streaming,
+   editing or restoring a document must never execute it. Missing runtimes do not
+   authorize silent installation or mutation of system/project environments.
+   Running agent-authored code by user click is not autonomous agent access;
+   Track H still governs agent execution and cross-actor session grants.
+3. **Exact source and result identity.** Retain the submitted bytes/hash, execution,
+   session generation and runtime identity. Add a deliberate chat message/block
+   source association; do not disguise chat as a filesystem path or identify a
+   block only by its current DOM position. Markdown keeps its document revision,
+   range and saved/dirty distinction. Editing/reordering, retries, reload and
+   duplicate blocks must not attach a result to different code. Mark results from
+   changed code as outdated; a code match alone does not prove the current kernel
+   namespace or input files still match the earlier run.
+4. **Bounded, durable results.** Inline UI is a projection of the existing execution
+   record, not a second output store. Unmounting a card must not lose the run or
+   restart it; retained results can reopen without rerunning. Preserve warnings
+   and partial output on failure, and never present a previous success as the
+   result of a failed rerun. Do not embed outputs into Markdown automatically or
+   render arbitrary active HTML with Scient's authority.
+
+Before implementation, settle the minimum source-identity extension, session-
+selection UX and result reattachment contract against real chat/Markdown editing
+behavior. Inspect `ComputeFileActions`, `ComputeOutputView`, `ComputeRichOutput`,
+`ScientRichFence`, the Markdown code-block node view, `ComputeRpcGateway` and
+`ComputeExecutionSource`; reuse mechanisms, not filesystem assumptions. Do not
+force executable blocks into the existing declarative chart-rendering path.
+
+**Acceptance gate:** Real Python and MATLAB runs through both entry points,
+source editing/reordering/duplicates, double clicks, missing setup/packages,
+language/session switching, interrupt and recovery, failed reruns with partial
+output, large/unsupported results, and reload/reconnect without implicit execution
+or misattribution. Verify remote environment scoping and user/agent ownership,
+plus bounded narrow-screen UI. Backend qualification and owner visual acceptance
+remain separate; full notebooks, widgets/comms, autonomous execution and arbitrary
+package installation are not part of this first slice.
+
 ### Roadmap dependency gates
 
 The capability tracks are not a license to build everything concurrently or to
@@ -3192,7 +3694,7 @@ continuous reliability and mainline-integration evidence:
 - release approval always requires exact-current-main, hosted, packaged, and
   platform evidence regardless of how many product tracks are implemented.
 
-The current planning recommendation after closing the Phase 4 candidate is to
+The planning recommendation recorded after closing the Phase 4 candidate was to
 advance managed Python setup and the neutral rich-representation foundation as
 separate bounded Phase 5 product lanes, while running the 5C-N0 notebook and
 second-language proofs before those shared contracts freeze. Phase 6 is the
@@ -3200,6 +3702,11 @@ named native-notebook product, not an indefinitely deferred follow-up: its
 document/authoring slice can start after 5C-N0, its execution slice follows the
 representation and display-projection foundations, and its richer output and
 interactive slices consume accepted capabilities incrementally.
+
+The 2026-09-10 continuation now prioritizes acceptance of Python/MATLAB setup,
+then independent Compute contexts and execution/result correctness for ordinary
+files. This revises the immediate delivery order, not the shared foundations or
+the requirement for a separately qualified native-notebook product.
 
 ---
 
@@ -3358,9 +3865,10 @@ Implement and qualify the following architectural direction:
 9. Compute-owned initial outputs and explicit provenance-preserving promotion,
    without premature shared artifact migration.
 10. At most one live project session in the first source-file UI, with a fresh
-    durable ID for each lifetime and inspectable prior histories. Phase 6 may
-    add bounded notebook-specific sessions through the same coordinator and
-    project control surface.
+    durable ID for each lifetime and inspectable prior histories. The
+    [next-pass direction](#next-pass-independent-compute-tabs) supersedes that
+    initial limit with many independent ordinary Compute contexts before Phase 6;
+    notebooks later reuse the same coordinator and project control surface.
 11. Human and later agent operations in the same scientific system and review
     surface, with actor-specific authorization and ownership.
 12. No agent execution before the operation envelope and minimum reliability

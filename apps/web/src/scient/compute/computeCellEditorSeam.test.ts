@@ -11,13 +11,15 @@ const fileEditorSource = NodeFS.readFileSync(
   "utf8",
 );
 const pythonSurfaceSource = NodeFS.readFileSync(
-  NodePath.join(here, "ScientPythonComputeSurface.tsx"),
+  NodePath.join(here, "ScientComputeFileSurface.tsx"),
   "utf8",
 );
 
 describe("Python active-cell editor seam", () => {
   it("derives the active cell from the shared run-target model", () => {
-    expect(pythonSurfaceSource).toContain("pythonActiveCell(props.contents, editorSelection)");
+    expect(pythonSurfaceSource).toContain(
+      "computeActiveCell(props.contents, editorSelection, props.language.cellMarker)",
+    );
     expect(pythonSurfaceSource).toContain("activeLineRange={activeCellRange}");
   });
 
@@ -33,6 +35,9 @@ describe("Python active-cell editor seam", () => {
   it("uses one Pierre gutter utility API for the run-cell action", () => {
     expect(fileEditorSource).toContain("renderEditorGutterAction === undefined");
     expect(fileEditorSource).toContain("{ onGutterUtilityClick: handleGutterUtilityClick }");
+    expect(fileEditorSource).toContain("FILE_EDITOR_ACTION_GUTTER_UNSAFE_CSS");
+    expect(fileEditorSource).toContain("[data-gutter-utility-slot]");
+    expect(fileEditorSource).toContain("justify-content: flex-start");
     expect(pythonSurfaceSource).toContain("renderEditorGutterAction: (");
     expect(pythonSurfaceSource).toContain("const hoveredLine = getHoveredLine();");
     expect(pythonSurfaceSource).not.toContain("onEditorGutterAction:");

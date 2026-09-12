@@ -7,17 +7,60 @@ import {
   type ComputeOutput,
   type ComputeSessionRecord,
   type ComputeSessionStreamEvent,
+  ComputeLanguageId,
+  type ComputeManagedRuntimeStatus,
+  type EnvironmentId,
+  type ScientificComputingSettings,
 } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
-import { Atom } from "effect/unstable/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/unstable/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
   createAtomCommandScheduler,
+  createEnvironmentCommand,
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
   createEnvironmentRpcSubscriptionAtomFamily,
 } from "./runtime.ts";
+
+/** Progress polling belongs to shared state, not to whichever screen started setup. */
+export function withManagedRuntimePolling<A extends ComputeManagedRuntimeStatus | null, E>(
+  source: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+) {
+  return withActiveOperationPolling(source, (status) => status?.operation != null);
+}
+
+function withActiveOperationPolling<A, E>(
+  source: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
+  active: (value: A) => boolean,
+) {
+  const polling = source.pipe(Atom.withRefresh("1 second"), Atom.setIdleTTL(0));
+  return Atom.transform(source, (get) => {
+    const result = get(source);
+    return result._tag === "Success" && !result.waiting && active(result.value)
+      ? get(polling)
+      : result;
+  }).pipe(Atom.setIdleTTL(0));
+}
+
+function managedRuntimeInspectionKey(status: ComputeManagedRuntimeStatus | null) {
+  return JSON.stringify(
+    status === null
+      ? null
+      : [
+          status.installed,
+          status.selection,
+          status.generationId,
+          status.runtimeVersion,
+          status.toolkitRevision,
+          status.operation?.operationId,
+          status.failureMessage,
+        ],
+  );
+}
 
 const MAXIMUM_TERMINAL_SESSIONS = 32;
 const MAXIMUM_EXECUTIONS_PER_SESSION = 100;
@@ -223,7 +266,8 @@ export function applyComputeSessionStreamEvent(
   }
 
   if (state.stale) return state;
-  const expected = state.expectedLiveSequence ?? state.snapshotBoundary ?? event.eventSequence;
+  // Empty projects have no snapshot; they still begin at cursor zero.
+  const expected = state.expectedLiveSequence ?? state.snapshotBoundary ?? 0;
   if (event.eventSequence < expected) return state;
   if (event.eventSequence > expected) {
     return {
@@ -240,9 +284,12 @@ export function applyComputeSessionStreamEvent(
 
 export function createComputeEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
+  settings?: (environmentId: EnvironmentId) => Atom.Atom<ScientificComputingSettings | undefined>,
 ) {
   const runtimeScheduler = createAtomCommandScheduler();
   const sessionScheduler = createAtomCommandScheduler();
+  // Termination must not wait behind a restart it is intended to cancel.
+  const stopScheduler = createAtomCommandScheduler();
   const executionScheduler = createAtomCommandScheduler();
   const sessionKey = ({
     environmentId,
@@ -252,12 +299,99 @@ export function createComputeEnvironmentAtoms<R, E>(
     input: { cwd: string; sessionId: string };
   }) => JSON.stringify([environmentId, input.cwd, input.sessionId]);
 
+  const revision = Atom.family((_environmentId: EnvironmentId) =>
+    Atom.make(0).pipe(Atom.keepAlive),
+  );
+  const statusQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:compute:managed-runtime",
+    tag: WS_METHODS.computeManagedRuntimeStatus,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  type StatusTarget = Parameters<typeof statusQuery>[0];
+  const statusFamily = Atom.family((key: string) =>
+    withManagedRuntimePolling(statusQuery(JSON.parse(key) as StatusTarget)),
+  );
+  const managedRuntime = (target: StatusTarget) => statusFamily(JSON.stringify(target));
+  const inspection = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:compute:runtimes",
+    tag: WS_METHODS.computeInspectRuntimes,
+    staleTimeMs: 0,
+    idleTtlMs: 0,
+  });
+  type InspectionTarget = Parameters<typeof inspection>[0];
+  const runtimesFamily = Atom.family((key: string) => {
+    const target = JSON.parse(key) as InspectionTarget;
+    const status = managedRuntime({
+      environmentId: target.environmentId,
+      input: { languageId: ComputeLanguageId.make("python") },
+    });
+    const invalidation = Atom.make((get) =>
+      JSON.stringify([
+        get(revision(target.environmentId)),
+        managedRuntimeInspectionKey(Option.getOrNull(AsyncResult.value(get(status)))),
+        settings === undefined ? null : get(settings(target.environmentId)),
+      ]),
+    );
+    const query = inspection(target).pipe(
+      Atom.makeRefreshOnSignal(invalidation),
+      Atom.setIdleTTL(0),
+    );
+    return Atom.transform(query, (get) => {
+      // Wait for the first status snapshot, including after returning from another screen.
+      // Unsupported/older hosts can still supply ordinary runtime discovery.
+      if (get(status)._tag === "Initial") return AsyncResult.initial(true);
+      return get(query);
+    }).pipe(Atom.setIdleTTL(0));
+  });
+  const runtimes = (target: InspectionTarget) => runtimesFamily(JSON.stringify(target));
+
+  // Settings keeps recent filesystem observations, never an execution-readiness
+  // promise. Revalidation on mount and identity changes is cheap and process-free.
+  const inventoryQuery = createEnvironmentRpcQueryAtomFamily(runtime, {
+    label: "environment-data:compute:runtime-inventory",
+    tag: WS_METHODS.computeRuntimeInventory,
+    staleTimeMs: 0,
+    idleTtlMs: 60_000,
+  });
+  type InventoryTarget = Parameters<typeof inventoryQuery>[0];
+  const inventoryFamily = Atom.family((key: string) => {
+    const target = JSON.parse(key) as InventoryTarget;
+    const invalidation = Atom.make((get) =>
+      JSON.stringify([
+        get(revision(target.environmentId)),
+        settings === undefined ? null : get(settings(target.environmentId)),
+      ]),
+    );
+    return withActiveOperationPolling(
+      inventoryQuery(target).pipe(
+        Atom.makeRefreshOnSignal(invalidation),
+        Atom.swr({ staleTime: 0, revalidateOnMount: true }),
+        Atom.setIdleTTL(0),
+      ),
+      (inventory) =>
+        inventory.languages.some((language) => language.managedRuntime?.operation != null),
+    );
+  });
+  const runtimeInventory = (target: InventoryTarget) => inventoryFamily(JSON.stringify(target));
+
   return {
-    runtimes: createEnvironmentRpcQueryAtomFamily(runtime, {
-      label: "environment-data:compute:runtimes",
-      tag: WS_METHODS.computeInspectRuntimes,
-      staleTimeMs: 15_000,
+    runtimeInventory,
+    refreshRuntimeInventory: createEnvironmentCommand(runtime, {
+      label: "environment-data:compute:refresh-runtime-inventory",
+      scheduler: runtimeScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId }: InventoryTarget) => environmentId,
+      },
+      execute: (_input: InventoryTarget["input"], registry, environmentId) =>
+        Effect.gen(function* () {
+          const query = runtimeInventory({ environmentId, input: {} });
+          registry.refresh(query);
+          return yield* AtomRegistry.getResult(registry, query, { suspendOnWaiting: true });
+        }),
     }),
+    runtimes,
     refreshRuntimes: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:compute:refresh-runtimes",
       tag: WS_METHODS.computeInspectRuntimes,
@@ -266,6 +400,48 @@ export function createComputeEnvironmentAtoms<R, E>(
         mode: "singleFlight",
         key: ({ environmentId, input }) => JSON.stringify([environmentId, input.cwd]),
       },
+      onSuccess: ({ environmentId }, registry) =>
+        Effect.sync(() => {
+          registry.refresh(
+            managedRuntime({
+              environmentId,
+              input: { languageId: ComputeLanguageId.make("python") },
+            }),
+          );
+          registry.update(revision(environmentId), (value) => value + 1);
+        }),
+    }),
+    managedRuntime,
+    manageRuntime: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:compute:manage-runtime",
+      tag: WS_METHODS.computeManageRuntime,
+      scheduler: runtimeScheduler,
+      concurrency: {
+        mode: "serial",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.languageId]),
+      },
+      onSettled: (target, registry) =>
+        Effect.sync(() => {
+          registry.refresh(
+            managedRuntime({ ...target, input: { languageId: target.input.languageId } }),
+          );
+          registry.update(revision(target.environmentId), (value) => value + 1);
+        }),
+    }),
+    cancelManagedRuntime: createEnvironmentRpcCommand(runtime, {
+      label: "environment-data:compute:cancel-managed-runtime",
+      tag: WS_METHODS.computeCancelManagedRuntime,
+      scheduler: runtimeScheduler,
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ environmentId, input }) => JSON.stringify([environmentId, input.languageId]),
+      },
+      onSettled: (target, registry) =>
+        Effect.sync(() =>
+          registry.refresh(
+            managedRuntime({ ...target, input: { languageId: target.input.languageId } }),
+          ),
+        ),
     }),
     sessions: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:compute:sessions",
@@ -322,8 +498,8 @@ export function createComputeEnvironmentAtoms<R, E>(
     stopSession: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:compute:stop-session",
       tag: WS_METHODS.computeStopSession,
-      scheduler: sessionScheduler,
-      concurrency: { mode: "serial", key: sessionKey },
+      scheduler: stopScheduler,
+      concurrency: { mode: "singleFlight", key: sessionKey },
     }),
     interruptSession: createEnvironmentRpcCommand(runtime, {
       label: "environment-data:compute:interrupt-session",

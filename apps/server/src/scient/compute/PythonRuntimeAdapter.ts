@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- discovery checks .venv existence and resolves paths.
-import { HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import * as Option from "effect/Option";
@@ -13,6 +14,8 @@ import {
   ComputeLanguageId,
   ComputeRuntimeError,
   ComputeRuntimeProfile,
+  type ComputeRuntimePackage,
+  type ComputeRuntimeInstallation,
   ComputeRuntimeReadiness,
   ComputeRuntimeSource,
   ComputeRuntimeVerification,
@@ -44,6 +47,20 @@ export const JUPYTER_BRIDGE_TRANSPORT_KIND = ComputeTransportKind.make("jupyter-
 const MIN_PYTHON_VERSION = "3.10";
 const MIN_JUPYTER_CLIENT_VERSION = "8.6";
 const MIN_IPYKERNEL_VERSION = "6.29";
+
+/**
+ * Reviewed packages needed by current compute readiness and the first proposed
+ * data-and-figures Toolkit. The probe stays bounded and does not enumerate an
+ * arbitrary user environment.
+ */
+const OBSERVED_PYTHON_PACKAGES = [
+  "ipykernel",
+  "jupyter_client",
+  "matplotlib",
+  "numpy",
+  "pandas",
+  "scipy",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Probe schema
@@ -102,7 +119,7 @@ function compareVersions(a: ComparablePythonVersion, b: ComparablePythonVersion)
   return 0;
 }
 
-function meetsMinimum(actual: string, minimum: string): boolean {
+export function meetsPythonMinimumVersion(actual: string, minimum: string): boolean {
   const parsedActual = parseComparableVersion(actual);
   const parsedMinimum = parseComparableVersion(minimum);
   return (
@@ -135,7 +152,7 @@ export const PROBE_SCRIPT = [
   '  "platform": sys.platform,',
   '  "packages": {},',
   "}",
-  'for pkg in ["jupyter_client", "ipykernel", "matplotlib", "numpy", "pandas"]:',
+  `for pkg in ${JSON.stringify(OBSERVED_PYTHON_PACKAGES)}:`,
   "    try:",
   '        r["packages"][pkg] = metadata.version(pkg)',
   "    except metadata.PackageNotFoundError:",
@@ -173,21 +190,21 @@ export function checkReadiness(probe: ProbeResult): {
     };
   }
 
-  if (!meetsMinimum(probe.version, MIN_PYTHON_VERSION)) {
+  if (!meetsPythonMinimumVersion(probe.version, MIN_PYTHON_VERSION)) {
     missing.push(`Python >= ${MIN_PYTHON_VERSION} (found ${probe.version})`);
   }
 
   const jupyterClientVersion = probe.packages["jupyter_client"] ?? null;
   if (jupyterClientVersion === null) {
     missing.push("jupyter_client");
-  } else if (!meetsMinimum(jupyterClientVersion, MIN_JUPYTER_CLIENT_VERSION)) {
+  } else if (!meetsPythonMinimumVersion(jupyterClientVersion, MIN_JUPYTER_CLIENT_VERSION)) {
     missing.push(`jupyter_client >= ${MIN_JUPYTER_CLIENT_VERSION} (found ${jupyterClientVersion})`);
   }
 
   const ipykernelVersion = probe.packages["ipykernel"] ?? null;
   if (ipykernelVersion === null) {
     missing.push("ipykernel");
-  } else if (!meetsMinimum(ipykernelVersion, MIN_IPYKERNEL_VERSION)) {
+  } else if (!meetsPythonMinimumVersion(ipykernelVersion, MIN_IPYKERNEL_VERSION)) {
     missing.push(`ipykernel >= ${MIN_IPYKERNEL_VERSION} (found ${ipykernelVersion})`);
   }
 
@@ -196,6 +213,14 @@ export function checkReadiness(probe: ProbeResult): {
   }
 
   return { readiness: "ready", missing: [] };
+}
+
+/** Stable, sorted package observations safe to expose through runtime inspection. */
+function observedPackages(probe: ProbeResult): ReadonlyArray<ComputeRuntimePackage> {
+  return OBSERVED_PYTHON_PACKAGES.map((name) => ({
+    name,
+    version: probe.packages[name] ?? null,
+  }));
 }
 
 function verificationMessage(
@@ -308,9 +333,17 @@ export function discoverCandidates(
   projectRoot: string | null,
   configuredExecutable: string | null,
   platform: string,
+  managedRuntime: { readonly executable: string; readonly selected: boolean } | null = null,
 ): ReadonlyArray<{ readonly executable: string; readonly source: ComputeRuntimeSource }> {
   const candidates: Array<{ executable: string; source: ComputeRuntimeSource }> = [];
   const isWindows = platform.startsWith("win");
+
+  // Selecting Scient-managed Python is an explicit user choice. Keep the
+  // existing configured, project, and PATH runtimes available below it, but
+  // do not let an older saved executable silently become the session default.
+  if (managedRuntime?.selected === true) {
+    candidates.push({ executable: managedRuntime.executable, source: "managed" });
+  }
 
   if (configuredExecutable !== null) {
     candidates.push({ executable: configuredExecutable, source: "configured" });
@@ -331,6 +364,12 @@ export function discoverCandidates(
   } else {
     candidates.push({ executable: "python3", source: "path" });
     candidates.push({ executable: "python", source: "path" });
+  }
+
+  // Keep an installed but unselected managed runtime visible as an option
+  // without changing today's project/PATH precedence.
+  if (managedRuntime !== null && !managedRuntime.selected) {
+    candidates.push({ executable: managedRuntime.executable, source: "managed" });
   }
 
   // Deduplicate by executable, preserving precedence order.  A configured
@@ -371,6 +410,19 @@ function runtimeError(
 export function makePythonRuntimeAdapter(
   spawnProbe: (executable: string) => Effect.Effect<string, ComputeRuntimeError>,
   bridgePath: string,
+  options: {
+    readonly managedRuntime?:
+      | (() => Effect.Effect<
+          {
+            readonly executable: string;
+            readonly selected: boolean;
+            readonly available?: boolean;
+            readonly version?: string;
+          } | null,
+          ComputeRuntimeError
+        >)
+      | undefined;
+  } = {},
 ): ComputeLanguageAdapter {
   const probeCache = new Map<
     string,
@@ -416,37 +468,52 @@ export function makePythonRuntimeAdapter(
     Effect.gen(function* () {
       if (request.refresh === true) probeCache.clear();
       const platform = yield* HostProcessPlatform;
+      const managedRuntime =
+        options.managedRuntime === undefined ? null : yield* options.managedRuntime();
       const candidates = discoverCandidates(
         request.projectRoot,
         request.configuredExecutable,
         platform,
+        managedRuntime,
       );
 
       const profiles: ComputeRuntimeProfile[] = [];
       for (const candidate of candidates) {
-        const result = yield* Effect.matchEffect(readProbe(candidate.executable), {
-          onFailure: () => Effect.succeed({ success: false as const, probe: null }),
-          onSuccess: (probe) => Effect.succeed({ success: true as const, probe }),
-        });
+        const result = yield* Effect.matchEffect(
+          candidate.source === "managed" && managedRuntime?.available === false
+            ? Effect.fail(runtimeError("discover", "Scient-managed Python needs repair."))
+            : readProbe(candidate.executable),
+          {
+            onFailure: () => Effect.succeed({ success: false as const, probe: null }),
+            onSuccess: (probe) => Effect.succeed({ success: true as const, probe }),
+          },
+        );
         // Malformed probe output is as unusable as a probe that would not run
         // at all: a runtime that cannot describe itself is not one to offer.
         const profile = result.success
           ? Option.some(buildProfile(result.probe, candidate.source))
           : Option.none();
         if (Option.isSome(profile)) profiles.push(profile.value);
-        // An interpreter the user named is answered with its own result rather
-        // than quietly replaced by whatever else happens to be installed.
-        if (candidate.source === "configured" && Option.isNone(profile)) {
-          return [
-            {
-              languageId: PYTHON_LANGUAGE_ID,
-              source: "configured",
-              executable: candidate.executable,
-              languageVersion: "unknown",
-              architecture: null,
-              displayName: `Python (configured, not found)`,
-            },
-          ];
+        // The explicitly selected runtime keeps its own failure instead of
+        // silently falling back. A stale configured alternative must not
+        // displace a healthy managed runtime the user selected after it.
+        if (
+          Option.isNone(profile) &&
+          (candidate.source === "configured" ||
+            (candidate.source === "managed" && managedRuntime?.selected === true))
+        ) {
+          const unavailable: ComputeRuntimeProfile = {
+            languageId: PYTHON_LANGUAGE_ID,
+            source: candidate.source,
+            executable: candidate.executable,
+            languageVersion: "unknown",
+            architecture: null,
+            displayName: `Python (${candidate.source}, not found)`,
+          };
+          if (managedRuntime?.selected !== true) {
+            return [unavailable];
+          }
+          profiles.push(unavailable);
         }
       }
 
@@ -455,6 +522,20 @@ export function makePythonRuntimeAdapter(
 
   const verify: ComputeLanguageAdapter["verify"] = (launchRequest) =>
     Effect.gen(function* () {
+      // Discovery's unavailable placeholder must not be probed a second time,
+      // especially when the managed path failed its ownership/containment check.
+      if (launchRequest.profile.languageVersion === "unknown") {
+        return {
+          profile: launchRequest.profile,
+          readiness: "unusable" as const,
+          missingRequirements: [],
+          packages: [],
+          message:
+            launchRequest.profile.source === "managed"
+              ? "Scient-managed Python is unavailable. Repair it in Scientific Computing settings or choose an existing environment."
+              : "The selected Python is unavailable. Refresh detection or choose another environment.",
+        };
+      }
       const parsed = yield* Effect.result(
         readProbe(launchRequest.profile.executable).pipe(
           Effect.mapError((cause) => runtimeError("verify", cause.message, cause)),
@@ -466,6 +547,7 @@ export function makePythonRuntimeAdapter(
           readiness: "unusable" as const,
           missingRequirements: [],
           message: `Probe failed: ${parsed.failure.message}`,
+          packages: [],
         } satisfies ComputeRuntimeVerification;
       }
       const probe = parsed.success;
@@ -482,6 +564,7 @@ export function makePythonRuntimeAdapter(
           readiness: "unusable" as const,
           missingRequirements: [],
           message: `Probe executable ${probe.executable} differs from launch executable ${launchRequest.profile.executable}.`,
+          packages: [],
         };
       }
 
@@ -490,6 +573,7 @@ export function makePythonRuntimeAdapter(
         readiness,
         missingRequirements: missing,
         message: verificationMessage(readiness, missing),
+        packages: observedPackages(probe),
       } satisfies ComputeRuntimeVerification;
     });
 
@@ -513,6 +597,58 @@ export function makePythonRuntimeAdapter(
   return {
     languageId: PYTHON_LANGUAGE_ID,
     transportKind: JUPYTER_BRIDGE_TRANSPORT_KIND,
+    listInstallations: Effect.fn("PythonRuntimeAdapter.listInstallations")(function* (request) {
+      const platform = yield* HostProcessPlatform;
+      const environment = yield* HostProcessEnvironment;
+      const resolveExecutable = yield* SpawnExecutableResolution;
+      const managed = options.managedRuntime === undefined ? null : yield* options.managedRuntime();
+      const installations: ComputeRuntimeInstallation[] = [];
+      const seen = new Set<string>();
+      const configured = request.configuredExecutable?.trim();
+      const configuredPath = configured
+        ? (resolveExecutable(configured, platform, environment) ?? configured)
+        : null;
+      const managedPath = managed
+        ? (resolveExecutable(managed.executable, platform, environment) ?? managed.executable)
+        : null;
+      const candidates = discoverCandidates(
+        request.projectRoot,
+        request.configuredExecutable,
+        platform,
+        managed,
+      ).map((candidate) => ({
+        ...candidate,
+        resolved: resolveExecutable(candidate.executable, platform, environment),
+      }));
+      for (const candidate of candidates) {
+        const resolved = candidate.resolved;
+        if (resolved === undefined && candidate.source === "path") continue;
+        const executable = resolved ?? candidate.executable;
+        if (seen.has(executable)) continue;
+        seen.add(executable);
+        // Keep PATH/managed ownership when the same executable is explicitly
+        // selected. Do not realpath Python: that would collapse virtualenvs.
+        const source =
+          managedPath === executable
+            ? "managed"
+            : (candidates.find(
+                (other) => other.source !== "configured" && other.resolved === executable,
+              )?.source ?? candidate.source);
+        installations.push({
+          executable,
+          source,
+          ...(configuredPath === executable ? { configured: true } : {}),
+          version: source === "managed" ? (managed?.version ?? null) : null,
+          problem:
+            source === "managed" && managed?.available === false
+              ? "Scient-managed Python needs repair."
+              : resolved === undefined
+                ? "The selected Python executable was not found."
+                : null,
+        });
+      }
+      return installations;
+    }),
     discover,
     verify,
     prepareLaunch,

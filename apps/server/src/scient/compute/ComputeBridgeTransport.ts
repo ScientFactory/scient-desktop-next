@@ -69,7 +69,7 @@ type RichDisplayPayload = Extract<DisplayPayload, { readonly kind: unknown }>;
  * belongs: a transport that also resolved one could disagree with the plan it
  * was handed.
  */
-export interface JupyterBridgeTransportOptions {
+export interface ComputeBridgeTransportOptions {
   readonly startupTimeoutMs?: number;
   /**
    * How many bytes of undelivered events one session may hold.
@@ -314,9 +314,9 @@ function pendingKey(
   return `${type}:${requestId ?? ""}:${generation}`;
 }
 
-export function makeJupyterBridgeTransport(
+export function makeComputeBridgeTransport(
   processes: DuplexProcessPort,
-  options: JupyterBridgeTransportOptions,
+  options: ComputeBridgeTransportOptions,
 ): ComputeTransport {
   const startupTimeoutMs = options.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
   const maxEventQueueBytes = options.maxEventQueueBytes ?? DEFAULT_MAX_EVENT_QUEUE_BYTES;
@@ -373,6 +373,7 @@ export function makeJupyterBridgeTransport(
         const stderrTail = MutableRef.make("");
         const pending = new Map<string, PendingResponse>();
         const commandGate = yield* Semaphore.make(1);
+        const shutdownGate = yield* Semaphore.make(1);
         const writeGate = yield* Semaphore.make(1);
         /**
          * Unbounded on purpose.
@@ -797,7 +798,7 @@ export function makeJupyterBridgeTransport(
                 // has already checked advances by exactly one. A copy in the
                 // payload would be a second source of truth that could disagree
                 // with the one the sequence and identity checks ran against.
-                const payload = message.payload as { kernelPid: number };
+                const payload = message.payload as { kernelPid: number | null };
                 const previous = MutableRef.get(runtimeIdentity);
                 if (previous === null) {
                   return yield* transportError(
@@ -938,6 +939,16 @@ export function makeJupyterBridgeTransport(
         ) =>
           writeGate.withPermits(1)(
             Effect.gen(function* () {
+              if (
+                MutableRef.get(closed) ||
+                MutableRef.get(lost) ||
+                (type !== "shutdown" && MutableRef.get(stopping))
+              ) {
+                return yield* transportError(
+                  operation,
+                  "The runtime is stopping or no longer reachable.",
+                );
+              }
               const sequence = MutableRef.get(outboundSequence);
               MutableRef.set(outboundSequence, sequence + 1);
               const frame = yield* encodeComputeProtocolMessage({
@@ -1060,7 +1071,7 @@ export function makeJupyterBridgeTransport(
                 yield* remainingStartupMs,
               );
               const payload = ready.payload as {
-                kernelPid: number;
+                kernelPid: number | null;
                 languageId: string;
                 languageVersion: string;
                 protocolVersion: number;
@@ -1101,6 +1112,9 @@ export function makeJupyterBridgeTransport(
           Effect.suspend(() => {
             if (MutableRef.get(closed) || MutableRef.get(lost)) {
               return Effect.fail(transportError(operation, "The runtime is no longer reachable."));
+            }
+            if (operation !== "shutdown" && MutableRef.get(stopping)) {
+              return Effect.fail(transportError(operation, "The runtime is stopping."));
             }
             const current = MutableRef.get(generation);
             return expected === current
@@ -1146,7 +1160,16 @@ export function makeJupyterBridgeTransport(
                 sendCommand(
                   "execute",
                   "execute",
-                  { code: executeRequest.code, silent: false, storeHistory: true },
+                  {
+                    code: executeRequest.code,
+                    silent: false,
+                    storeHistory: true,
+                    ...(executeRequest.sourceContext === undefined
+                      ? {}
+                      : {
+                          sourceContext: executeRequest.sourceContext,
+                        }),
+                  },
                   executeRequest.expectedGeneration,
                   executeRequest.requestId,
                 ),
@@ -1281,57 +1304,56 @@ export function makeJupyterBridgeTransport(
           );
 
         const shutdown: ComputeChannel["shutdown"] = (shutdownRequest) =>
-          commandGate.withPermits(1)(
-            Effect.suspend(() => {
-              if (MutableRef.get(closed)) return Effect.void;
-              return ensureGeneration("shutdown", shutdownRequest.expectedGeneration).pipe(
-                // Set before the round trip, not after: the bridge closes its
-                // stdout and exits as part of answering, and both of those
-                // reach the watchers above before `shutdown-complete` reaches
-                // this fibre. If the round trip fails the session really is in
-                // trouble, so the flag is cleared and loss reporting resumes.
-                Effect.andThen(
-                  Effect.sync(() => {
-                    MutableRef.set(stopping, true);
-                  }),
-                ),
-                Effect.andThen(
-                  requestResponse(
-                    "shutdown",
-                    {
-                      type: "shutdown",
-                      payload: {},
-                      generation: shutdownRequest.expectedGeneration,
-                    },
-                    {
-                      type: "shutdown-complete",
-                      generation: shutdownRequest.expectedGeneration,
-                    },
-                    DEFAULT_SHUTDOWN_TIMEOUT_MS,
-                  ).pipe(
-                    // The bridge was asked to leave and did not answer. It is
-                    // not shutting down cleanly, so the intent is withdrawn and
-                    // the session is reported lost -- a consumer waiting on the
-                    // event stream has to be told the session ended, and this
-                    // is the only place that still knows why.
-                    Effect.tapError((error) =>
-                      Effect.sync(() => {
-                        MutableRef.set(stopping, false);
-                      }).pipe(Effect.andThen(lose(error))),
-                    ),
+          // Shutdown has its own bounded round trip; a slow restart cannot monopolize Stop.
+          Effect.suspend(() => {
+            if (MutableRef.get(closed)) return Effect.void;
+            return ensureGeneration("shutdown", shutdownRequest.expectedGeneration).pipe(
+              // Set before the round trip, not after: the bridge closes its
+              // stdout and exits as part of answering, and both of those
+              // reach the watchers above before `shutdown-complete` reaches
+              // this fibre. If the round trip fails the session really is in
+              // trouble, so the flag is cleared and loss reporting resumes.
+              Effect.andThen(
+                Effect.sync(() => {
+                  MutableRef.set(stopping, true);
+                }),
+              ),
+              Effect.andThen(
+                requestResponse(
+                  "shutdown",
+                  {
+                    type: "shutdown",
+                    payload: {},
+                    generation: shutdownRequest.expectedGeneration,
+                  },
+                  {
+                    type: "shutdown-complete",
+                    generation: shutdownRequest.expectedGeneration,
+                  },
+                  DEFAULT_SHUTDOWN_TIMEOUT_MS,
+                ).pipe(
+                  // The bridge was asked to leave and did not answer. It is
+                  // not shutting down cleanly, so the intent is withdrawn and
+                  // the session is reported lost -- a consumer waiting on the
+                  // event stream has to be told the session ended, and this
+                  // is the only place that still knows why.
+                  Effect.tapError((error) =>
+                    Effect.sync(() => {
+                      MutableRef.set(stopping, false);
+                    }).pipe(Effect.andThen(lose(error))),
                   ),
                 ),
-                Effect.andThen(
-                  Effect.sync(() => {
-                    MutableRef.set(closed, true);
-                  }),
-                ),
-                Effect.andThen(Queue.end(events)),
-                Effect.andThen(handle.cancelProcessTree.pipe(Effect.ignore)),
-                Effect.asVoid,
-              );
-            }),
-          );
+              ),
+              Effect.andThen(
+                Effect.sync(() => {
+                  MutableRef.set(closed, true);
+                }),
+              ),
+              Effect.andThen(Queue.end(events)),
+              Effect.andThen(handle.cancelProcessTree.pipe(Effect.ignore)),
+              Effect.asVoid,
+            );
+          }).pipe(shutdownGate.withPermits(1));
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {

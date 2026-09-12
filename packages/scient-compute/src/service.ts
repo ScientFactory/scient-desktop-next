@@ -40,6 +40,7 @@ export class ComputeOperationError extends Schema.TaggedError<ComputeOperationEr
       "subscribe",
       "inspect",
       "verify",
+      "manage",
       "variables",
     ]),
     reason: Schema.Literals([
@@ -52,6 +53,7 @@ export class ComputeOperationError extends Schema.TaggedError<ComputeOperationEr
       "generation-stale",
       // The session is there and healthy but has nowhere to put the work.
       "queue-full",
+      "capacity-reached",
       // No usable runtime for the language, in terms a user can act on.
       "runtime-missing",
       "runtime-unusable",
@@ -85,6 +87,8 @@ export const ComputeStartSessionInput = Schema.Struct({
   label: Label,
   workingDirectory: ShortText,
   configuredExecutable: Schema.NullOr(ShortText),
+  /** An explicit per-session choice, distinct from the environment's default preference. */
+  requestedExecutable: Schema.optional(ShortText),
 });
 export type ComputeStartSessionInput = typeof ComputeStartSessionInput.Type;
 

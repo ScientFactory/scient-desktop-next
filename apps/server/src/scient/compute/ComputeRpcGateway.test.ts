@@ -17,6 +17,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Stream from "effect/Stream";
 
 import { extractComputeSourceRange, makeComputeRpcGateway } from "./ComputeRpcGateway.ts";
+import { PYTHON_DATA_AND_FIGURES_TOOLKIT, assessPythonToolkit } from "./PythonToolkitCatalog.ts";
 
 const PYTHON = ComputeLanguageId.make("python");
 const PROFILE = {
@@ -85,12 +86,32 @@ function record(
 }
 
 function computeStub(overrides: Partial<GatewayCompute> = {}): GatewayCompute {
+  const managedRuntime = {
+    installed: false,
+    selection: "existing" as const,
+    updateAvailable: false,
+    runtimeVersion: null,
+    toolkitRevision: null,
+    operation: null,
+    failureMessage: null,
+  };
   return {
     runtimeDescriptors: [DESCRIPTOR],
+    runtimeInventory: () =>
+      Effect.succeed([
+        {
+          descriptor: DESCRIPTOR,
+          managedRuntime,
+          toolkits: [],
+          installations: [],
+          failureMessage: null,
+        },
+      ]),
     inspectRuntimes: (input) =>
       Effect.succeed([
         {
           descriptor: DESCRIPTOR,
+          toolkits: [],
           runtimes: input.enabledLanguageIds.has(PYTHON)
             ? [
                 {
@@ -100,7 +121,9 @@ function computeStub(overrides: Partial<GatewayCompute> = {}): GatewayCompute {
                     readiness: "ready",
                     missingRequirements: [],
                     message: null,
+                    packages: [],
                   },
+                  toolkits: [],
                 },
               ]
             : [],
@@ -112,7 +135,11 @@ function computeStub(overrides: Partial<GatewayCompute> = {}): GatewayCompute {
         readiness: "ready",
         missingRequirements: [],
         message: null,
+        packages: [],
       }),
+    managedRuntimeStatus: () => Effect.succeed(managedRuntime),
+    manageRuntime: () => Effect.succeed(managedRuntime),
+    cancelManagedRuntime: () => Effect.succeed(managedRuntime),
     startSession: (input) => Effect.succeed(record(input.projectId, input.sessionId)),
     listSessions: () => Effect.succeed([]),
     getSession: () => Effect.succeed(null),
@@ -161,6 +188,37 @@ const project = Effect.gen(function* () {
 });
 
 describe("compute RPC gateway", () => {
+  it.effect("reads inventory preferences without inspecting or verifying runtimes", () =>
+    Effect.gen(function* () {
+      let enabled: ReadonlySet<unknown> = new Set();
+      const gateway = makeComputeRpcGateway({
+        compute: computeStub({
+          runtimeInventory: (input) => {
+            enabled = input.enabledLanguageIds;
+            return Effect.succeed([
+              {
+                descriptor: DESCRIPTOR,
+                managedRuntime: null,
+                toolkits: [],
+                installations: [],
+                failureMessage: null,
+              },
+            ]);
+          },
+          inspectRuntimes: () => Effect.die("Settings must not inspect runtimes"),
+          verifyRuntime: () => Effect.die("Settings must not verify runtimes"),
+        }),
+        serverSettings: { getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS) },
+        workspaceFileSystem: workspace(),
+      });
+      expect((yield* gateway.runtimeInventory()).languages[0]).toMatchObject({
+        enabled: false,
+        configuredExecutable: null,
+        installations: [],
+      });
+      expect(enabled.size).toBe(0);
+    }),
+  );
   it.effect("does not inspect or start a language the user left disabled", () =>
     Effect.gen(function* () {
       const initialized = yield* project;
@@ -173,7 +231,7 @@ describe("compute RPC gateway", () => {
       const compute = computeStub({
         inspectRuntimes: (input) => {
           inspectionEnabled = new Set(input.enabledLanguageIds);
-          return Effect.succeed([{ descriptor: DESCRIPTOR, runtimes: [] }]);
+          return Effect.succeed([{ descriptor: DESCRIPTOR, toolkits: [], runtimes: [] }]);
         },
         startSession: (input) => {
           startCalls += 1;
@@ -201,6 +259,75 @@ describe("compute RPC gateway", () => {
       expect(error.reason).toBe("language-disabled");
       expect(startCalls).toBe(0);
       expect(yield* gateway.listSessions({ cwd: initialized.root })).toEqual([retained]);
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("preserves Toolkit readiness from each exact verified runtime", () =>
+    Effect.gen(function* () {
+      const initialized = yield* project;
+      const verification = {
+        profile: PROFILE,
+        readiness: "ready" as const,
+        missingRequirements: [],
+        message: null,
+        packages: [
+          { name: "ipykernel", version: "6.29.5" },
+          { name: "jupyter_client", version: "8.6.3" },
+          { name: "matplotlib", version: "3.9.1" },
+          { name: "numpy", version: "2.0.1" },
+          { name: "pandas", version: "2.2.2" },
+          { name: "scipy", version: null },
+        ],
+      };
+      const compute = computeStub({
+        inspectRuntimes: () =>
+          Effect.succeed([
+            {
+              descriptor: DESCRIPTOR,
+              toolkits: [PYTHON_DATA_AND_FIGURES_TOOLKIT],
+              runtimes: [
+                {
+                  profile: PROFILE,
+                  verification,
+                  toolkits: [assessPythonToolkit(PYTHON_DATA_AND_FIGURES_TOOLKIT, verification)],
+                },
+              ],
+            },
+          ]),
+      });
+      const gateway = makeComputeRpcGateway({
+        compute,
+        serverSettings: {
+          getSettings: Effect.succeed({
+            ...DEFAULT_SERVER_SETTINGS,
+            scientificComputing: {
+              schemaVersion: 1,
+              languages: { python: { enabled: true, executable: "" } },
+            },
+          }),
+        },
+        workspaceFileSystem: workspace(),
+      });
+
+      const inspection = yield* gateway.inspectRuntimes({
+        cwd: initialized.root,
+        refresh: false,
+      });
+
+      expect(inspection.languages[0]?.toolkits).toMatchObject([
+        {
+          toolkitId: "python-data-and-figures",
+          displayName: "Data analysis and figures",
+        },
+      ]);
+      expect(inspection.languages[0]?.runtimes[0]?.toolkits).toMatchObject([
+        {
+          toolkitId: "python-data-and-figures",
+          readiness: "missing-requirement",
+          missingRequirements: ["SciPy"],
+          runtime: { executable: PROFILE.executable },
+        },
+      ]);
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
@@ -242,22 +369,34 @@ describe("compute RPC gateway", () => {
         workingDirectory: yield* fs.realPath(initialized.root),
         configuredExecutable: "/preferred/python",
       });
+
+      yield* gateway.startSession({
+        cwd: initialized.root,
+        sessionId: ComputeSessionId.make("explicit-session"),
+        languageId: PYTHON,
+        executable: "/chosen/python",
+      });
+      expect(started).toMatchObject({
+        configuredExecutable: "/preferred/python",
+        requestedExecutable: "/chosen/python",
+      });
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 
-  it.effect("bounds and orders durable session history at the product boundary", () =>
+  it.effect("bounds history without hiding older live sessions at the product boundary", () =>
     Effect.gen(function* () {
       const initialized = yield* project;
       const projectId = ComputeProjectId.make(initialized.identity.projectId);
-      const history = Array.from({ length: 130 }, (_, index) =>
-        record(
+      const history = Array.from({ length: 130 }, (_, index) => ({
+        ...record(
           projectId,
           ComputeSessionId.make(`session-${index}`),
           `2026-08-20T${String(12 + Math.floor(index / 60)).padStart(2, "0")}:${String(
             index % 60,
           ).padStart(2, "0")}:00.000Z`,
         ),
-      );
+        status: index === 0 ? ("ready" as const) : ("stopped" as const),
+      }));
       const gateway = makeComputeRpcGateway({
         compute: computeStub({ listSessions: () => Effect.succeed(history) }),
         serverSettings: { getSettings: Effect.succeed(DEFAULT_SERVER_SETTINGS) },
@@ -265,9 +404,10 @@ describe("compute RPC gateway", () => {
       });
 
       const listed = yield* gateway.listSessions({ cwd: initialized.root });
-      expect(listed).toHaveLength(100);
+      expect(listed).toHaveLength(101);
       expect(listed[0]?.sessionId).toBe("session-129");
-      expect(listed.at(-1)?.sessionId).toBe("session-30");
+      expect(listed.at(-2)?.sessionId).toBe("session-30");
+      expect(listed.at(-1)?.sessionId).toBe("session-0");
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 

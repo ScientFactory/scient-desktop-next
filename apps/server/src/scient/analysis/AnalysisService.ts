@@ -66,6 +66,7 @@ import * as WorkspacePaths from "../../workspace/WorkspacePaths.ts";
 import * as AnalysisRunIndex from "./AnalysisRunIndex.ts";
 import { promoteAnalysisRun } from "./AnalysisRunPromotion.ts";
 import * as LocalAnalysisStore from "./LocalAnalysisStore.ts";
+import { ScientificRuntimePreferences } from "../compute/ScientificRuntimePreferences.ts";
 import type { ResolvedAnalysisArtifactRepresentation } from "./LocalAnalysisStore.ts";
 import * as LocalExecutionProcess from "../execution/LocalExecutionProcess.ts";
 import {
@@ -200,6 +201,7 @@ const make = Effect.gen(function* () {
   const workspaceFiles = yield* WorkspaceFileSystem.WorkspaceFileSystem;
   const workspacePaths = yield* WorkspacePaths.WorkspacePaths;
   const store = yield* LocalAnalysisStore.LocalAnalysisStore;
+  const runtimePreferences = yield* ScientificRuntimePreferences;
   const runIndex = yield* AnalysisRunIndex.AnalysisRunIndex;
   const executionScope = yield* Scope.make("sequential");
   const startLock = yield* Semaphore.make(1);
@@ -222,7 +224,23 @@ const make = Effect.gen(function* () {
   const dirtyIndexProjectsRef = yield* Ref.make(new Set<string>());
   const runtimeQueuesRef = yield* Ref.make(new Map<string, ReadonlyArray<string>>());
   const handlesRef = yield* Ref.make(new Map<string, ExecutionProcessHandle>());
-  const runtimeProfilesRef = yield* Ref.make(new Map<string, AnalysisRuntimeProfile>());
+  const runtimeProfilesRef = yield* Ref.make(
+    new Map<
+      string,
+      { readonly executablePreference: string | null; readonly profile: AnalysisRuntimeProfile }
+    >(),
+  );
+  const cacheVerification = (
+    profile: AnalysisRuntimeProfile,
+    verifiedProfile: AnalysisRuntimeProfile,
+  ) =>
+    Ref.update(runtimeProfilesRef, (profiles) => {
+      const current = profiles.get(profile.kind);
+      // A late verification must not replace a subsequently selected runtime.
+      return current?.profile === profile
+        ? new Map(profiles).set(profile.kind, { ...current, profile: verifiedProfile })
+        : profiles;
+    });
   const verificationCacheRef = yield* Ref.make(
     new Map<
       string,
@@ -416,9 +434,7 @@ const make = Effect.gen(function* () {
 
   const inspectProfile = (adapter: AnalysisRuntimeAdapter, refresh: boolean) =>
     Effect.gen(function* () {
-      const cached = (yield* Ref.get(runtimeProfilesRef)).get(adapter.kind);
-      if (cached !== undefined && !refresh) return cached;
-      const runtimeConfiguration = yield* store
+      const runtimeConfiguration = yield* runtimePreferences
         .readRuntimeExecutablePath(adapter.kind)
         .pipe(
           Effect.mapError((cause) =>
@@ -430,6 +446,13 @@ const make = Effect.gen(function* () {
             ),
           ),
         );
+      const cached = (yield* Ref.get(runtimeProfilesRef)).get(adapter.kind);
+      if (
+        cached !== undefined &&
+        !refresh &&
+        cached.executablePreference === runtimeConfiguration.executablePath
+      )
+        return cached.profile;
       const inspectedAt = yield* nowIso;
       const inspectedProfile = yield* Effect.tryPromise({
         try: () =>
@@ -459,7 +482,10 @@ const make = Effect.gen(function* () {
                 .join(" "),
             };
       yield* Ref.update(runtimeProfilesRef, (profiles) =>
-        new Map(profiles).set(adapter.kind, profile),
+        new Map(profiles).set(adapter.kind, {
+          executablePreference: runtimeConfiguration.executablePath,
+          profile,
+        }),
       );
       return profile;
     });
@@ -480,7 +506,7 @@ const make = Effect.gen(function* () {
           `Unsupported analysis runtime '${input.runtimeKind}'.`,
         );
       }
-      yield* store
+      yield* runtimePreferences
         .writeRuntimeExecutablePath(adapter.kind, input.executablePath)
         .pipe(
           Effect.mapError((cause) =>
@@ -552,9 +578,7 @@ const make = Effect.gen(function* () {
               cached.verification.executableIdentity === prepared.executableIdentity
             ) {
               const verifiedProfile = { ...profile, verification: cached.verification };
-              yield* Ref.update(runtimeProfilesRef, (profiles) =>
-                new Map(profiles).set(adapter.kind, verifiedProfile),
-              );
+              yield* cacheVerification(profile, verifiedProfile);
               return verifiedProfile;
             }
 
@@ -653,9 +677,7 @@ const make = Effect.gen(function* () {
               detail: verification.detail,
               verification,
             } satisfies AnalysisRuntimeProfile;
-            yield* Ref.update(runtimeProfilesRef, (profiles) =>
-              new Map(profiles).set(adapter.kind, verifiedProfile),
-            );
+            yield* cacheVerification(profile, verifiedProfile);
             yield* Ref.update(verificationCacheRef, (cache) => {
               const next = new Map(cache);
               if (verification.status === "ready") {

@@ -7,8 +7,10 @@ import type {
   EnvironmentId,
   ScopedThreadRef,
 } from "@t3tools/contracts";
-import { projectComputeOutputs, selectComputeRepresentation } from "@t3tools/contracts";
+import { selectComputeRepresentation } from "@t3tools/contracts";
 import { CircleAlert, Image as ImageIcon, Info, LoaderCircle, RotateCcw } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { useState } from "react";
 
 import { useAssetUrlState } from "~/assets/assetUrls";
 import {
@@ -16,6 +18,8 @@ import {
   StaticImageDownloadButton,
 } from "~/components/preview/StaticImageActionButtons";
 import { Button } from "~/components/ui/button";
+import { stackedThreadToast, toastManager } from "~/components/ui/toast";
+import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import { useRightPanelStore } from "~/rightPanelStore";
 import {
   StaticArtifactPresentationActionMenu,
@@ -25,8 +29,16 @@ import {
 import {
   computeFigurePresentation,
   type ComputeFigurePresentation,
+  type ComputeFigureNativeDownload,
 } from "./computeFigurePresentation";
-import { computeProjectedStaticImage, computeSystemEventLabel } from "./computeResultPresentation";
+import {
+  computeProjectedStaticImage,
+  computeSystemEventLabel,
+  projectComputeFigureOutputs,
+} from "./computeResultPresentation";
+import { downloadComputeNativeFigure } from "./ComputeOutputViewDownload";
+import { computeRichRepresentation } from "./computeRichRepresentation";
+import { ComputeRichOutput } from "./ComputeRichOutput";
 
 type ComputeExecutionSource = ComputeExecutionRecord["request"]["source"];
 
@@ -60,9 +72,12 @@ function ComputeFigure(props: {
   readonly presentation: ComputeFigurePresentation;
   readonly environmentId: EnvironmentId;
   readonly dimensions: string;
+  readonly observedProjectFile: boolean;
   readonly threadRef: ScopedThreadRef;
 }) {
   const asset = useAssetUrlState(props.environmentId, props.presentation.inline.resource);
+  const isObservedProjectFile =
+    props.observedProjectFile || props.presentation.reference._tag === "project-file";
 
   return (
     <figure className="overflow-hidden rounded-md border border-border/70 bg-card">
@@ -93,6 +108,23 @@ function ComputeFigure(props: {
         <span className="min-w-0 flex-1 truncate text-xs font-medium">
           {props.presentation.inline.label}
         </span>
+        {isObservedProjectFile ? (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <span
+                  className="shrink-0 text-[10px] text-muted-foreground"
+                  aria-label="Observed project file; this execution is not proven to have created it."
+                >
+                  Observed project file
+                </span>
+              }
+            />
+            <TooltipPopup side="top">
+              Observed project file; this execution is not proven to have created it.
+            </TooltipPopup>
+          </Tooltip>
+        ) : null}
         <span className="shrink-0 text-[11px] text-muted-foreground">{props.dimensions}</span>
         {asset._tag === "Failure" ? (
           <Button size="icon-xs" variant="ghost" onClick={asset.refresh} aria-label="Retry figure">
@@ -113,8 +145,70 @@ function ComputeFigure(props: {
           fileName={props.presentation.inline.fileName}
           threadRef={props.threadRef}
         />
+        {props.presentation.nativeDownload === null ? null : (
+          <ComputeNativeFigureDownload
+            figure={props.presentation.nativeDownload}
+            environmentId={props.environmentId}
+            threadRef={props.threadRef}
+          />
+        )}
       </figcaption>
     </figure>
+  );
+}
+
+function ComputeNativeFigureDownload(props: {
+  readonly figure: ComputeFigureNativeDownload;
+  readonly environmentId: EnvironmentId;
+  readonly threadRef: ScopedThreadRef;
+}) {
+  const asset = useAssetUrlState(props.environmentId, props.figure.resource);
+  const [running, setRunning] = useState(false);
+  const label = asset._tag === "Failure" ? "Retry FIG download" : "Download MATLAB FIG";
+  const download = async () => {
+    if (running) return;
+    if (asset._tag === "Failure") {
+      asset.refresh();
+      return;
+    }
+    if (asset._tag !== "Success") return;
+    setRunning(true);
+    try {
+      await downloadComputeNativeFigure(asset.url, props.figure);
+    } catch (cause) {
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to download FIG",
+          description: cause instanceof Error ? cause.message : "The FIG file is unavailable.",
+          data: { threadRef: props.threadRef },
+        }),
+      );
+    } finally {
+      setRunning(false);
+    }
+  };
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            size="xs"
+            variant="ghost"
+            aria-label={label}
+            disabled={running || asset._tag === "Loading"}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              void download();
+            }}
+          >
+            {running ? <LoaderCircle className="size-3 animate-spin" /> : "FIG"}
+          </Button>
+        }
+      />
+      <TooltipPopup side="top">{label}</TooltipPopup>
+    </Tooltip>
   );
 }
 
@@ -156,6 +250,7 @@ export function ComputeOutputView(props: {
   readonly environmentId: EnvironmentId;
   readonly session: ComputeSessionRecord;
   readonly executionId: ComputeExecutionId | null;
+  readonly executionGeneration?: ComputeSessionRecord["generation"];
   readonly outputs: ReadonlyArray<ComputeOutput>;
   readonly emptyLabel?: string;
   readonly corruptLineCount?: number;
@@ -182,7 +277,7 @@ export function ComputeOutputView(props: {
           {props.corruptLineCount === 1 ? "" : "s"}).
         </p>
       ) : null}
-      {projectComputeOutputs(props.outputs).map((output, index) => {
+      {projectComputeFigureOutputs(props.outputs).map((output, index) => {
         switch (output._tag) {
           case "stream":
             return (
@@ -209,6 +304,21 @@ export function ComputeOutputView(props: {
                     <p className="font-medium text-destructive">
                       {output.diagnostic.errorName}: {output.diagnostic.message}
                     </p>
+                    {output.diagnostic.errorName === "ModuleNotFoundError" ? (
+                      <Button
+                        size="xs"
+                        variant="ghost-muted"
+                        className="mt-1"
+                        render={
+                          <Link
+                            to="/settings/scientific-computing"
+                            search={{ environmentId: props.environmentId }}
+                          />
+                        }
+                      >
+                        Python environments
+                      </Button>
+                    ) : null}
                     <ComputeDiagnosticFrames
                       frames={output.diagnostic.frames}
                       threadRef={props.threadRef}
@@ -233,6 +343,9 @@ export function ComputeOutputView(props: {
               cwd: props.cwd,
               session: props.session,
               executionId: props.executionId,
+              ...(props.executionGeneration === undefined
+                ? {}
+                : { executionGeneration: props.executionGeneration }),
               output,
               displayOrdinal: imageOrdinal,
               runtimeDisplayOrdinal,
@@ -243,6 +356,7 @@ export function ComputeOutputView(props: {
                 key={outputKey(output, index)}
                 presentation={presentation}
                 environmentId={props.environmentId}
+                observedProjectFile={output.origin?._tag === "project-file"}
                 dimensions={
                   output.width && output.height
                     ? `${output.width} × ${output.height}`
@@ -268,6 +382,9 @@ export function ComputeOutputView(props: {
               </div>
             );
           case "representation": {
+            const rich = computeRichRepresentation(output);
+            if (rich !== null)
+              return <ComputeRichOutput key={outputKey(output, index)} representation={rich} />;
             const image = computeProjectedStaticImage(output);
             if (image === null) {
               return (
@@ -284,12 +401,16 @@ export function ComputeOutputView(props: {
                   cwd: props.cwd,
                   session: props.session,
                   executionId: props.executionId,
+                  ...(props.executionGeneration === undefined
+                    ? {}
+                    : { executionGeneration: props.executionGeneration }),
                   output: image,
                   displayOrdinal: imageOrdinal,
                   runtimeDisplayOrdinal,
                   source: props.source ?? null,
                 })}
                 environmentId={props.environmentId}
+                observedProjectFile={false}
                 dimensions={image.mediaType === "image/svg+xml" ? "SVG" : "PNG"}
                 threadRef={props.threadRef}
               />

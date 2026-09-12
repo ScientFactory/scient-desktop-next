@@ -22,6 +22,31 @@ const EMPTY_PROJECT_FILE_PATH = "";
 const EMPTY_PROJECT_FILE_QUERY_ATOM = Atom.make(
   AsyncResult.initial<ProjectReadFileResult, never>(false),
 ).pipe(Atom.withLabel("project-file-query:empty"));
+const projectFilesRefreshSignal = Atom.family((key: string) =>
+  Atom.make(0).pipe(Atom.withLabel(`project-files-refresh:${key}`)),
+);
+
+/** Refresh both query-backed pickers and mounted lazy trees after known workspace writes. */
+export function refreshProjectFiles(environmentId: EnvironmentId, cwd: string): void {
+  appAtomRegistry.refresh(getProjectEntriesQueryAtom(environmentId, cwd));
+  appAtomRegistry.update(
+    projectFilesRefreshSignal(JSON.stringify([environmentId, cwd])),
+    (n) => n + 1,
+  );
+}
+
+/** A tree loads on mount; this signal only requests subsequent, workspace-scoped refreshes. */
+export function subscribeProjectFilesRefresh(
+  environmentId: EnvironmentId,
+  cwd: string,
+  refresh: () => void,
+): () => void {
+  const signal = projectFilesRefreshSignal(JSON.stringify([environmentId, cwd]));
+  // Initialize before subscribing so the first write is not also an initial-value notification.
+  appAtomRegistry.get(signal);
+  return appAtomRegistry.subscribe(signal, refresh);
+}
+
 function optimisticFileAtom(environmentId: EnvironmentId, cwd: string, relativePath: string) {
   return projectEnvironment.optimisticFile({ environmentId, cwd, relativePath });
 }
@@ -37,7 +62,7 @@ export interface ProjectFileQueryState extends ProjectQueryState<ProjectReadFile
   readonly authoritativeData: ProjectReadFileResult | null;
 }
 
-export function getProjectEntriesQueryAtom(environmentId: EnvironmentId, cwd: string) {
+function getProjectEntriesQueryAtom(environmentId: EnvironmentId, cwd: string) {
   return projectEnvironment.listEntries({ environmentId, input: { cwd } });
 }
 

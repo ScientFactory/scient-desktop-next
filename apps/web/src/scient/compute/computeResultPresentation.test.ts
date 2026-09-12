@@ -266,6 +266,17 @@ describe("compute result presentation", () => {
     expect(selectComputeFigureFallback([running, otherGeneration], running, false)).toBeNull();
   });
 
+  it("never falls back to a same-file figure from another session", () => {
+    const previousSessionFigure = execution("execution-1", "succeeded", 1, {
+      sessionId: ComputeSessionId.make("session-2"),
+    });
+    const running = execution("execution-2", "running");
+
+    expect(
+      selectComputeFigureFallback([running, previousSessionFigure], running, false),
+    ).toBeNull();
+  });
+
   it("uses user-facing execution and system labels", () => {
     expect(computeExecutionStatusLabel(null)).toBe("Pending");
     expect(computeExecutionStatusLabel({ status: "lost", queuePosition: null })).toBe(

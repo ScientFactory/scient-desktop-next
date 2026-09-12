@@ -2,6 +2,8 @@
 // @effect-diagnostics globalDate:off -- test uses process.hrtime for unique temp directories.
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
+import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 
 import {
   ComputeRuntimeError,
@@ -38,6 +40,7 @@ const validProbeOutput = JSON.stringify({
     matplotlib: "3.9.0",
     numpy: "1.26.0",
     pandas: "2.2.0",
+    scipy: null,
   },
 });
 
@@ -49,6 +52,152 @@ const profile: ComputeRuntimeProfile = {
   architecture: "arm64",
   displayName: "Python 3.12.0 (path)",
 };
+
+describe("Python filesystem inventory", () => {
+  it.effect("keeps a selected PATH installation's provenance and virtualenvs distinct", () =>
+    Effect.gen(function* () {
+      const adapter = makePythonRuntimeAdapter(() => Effect.never, "/bridge.py");
+      for (const configuredExecutable of ["python3", "/system/python"]) {
+        const rows = yield* adapter.listInstallations!({
+          projectRoot: null,
+          configuredExecutable,
+          refresh: true,
+        });
+        expect(rows).toEqual([
+          {
+            executable: "/system/python",
+            source: "path",
+            configured: true,
+            version: null,
+            problem: null,
+          },
+        ]);
+      }
+      const rows = yield* adapter.listInstallations!({
+        projectRoot: null,
+        configuredExecutable: "/venv/bin/python",
+        refresh: true,
+      });
+      expect(rows.map((row) => row.executable)).toEqual(["/venv/bin/python", "/system/python"]);
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "darwin"),
+      Effect.provideService(HostProcessEnvironment, {}),
+      Effect.provideService(SpawnExecutableResolution, (command) =>
+        command === "python3" || command === "python" || command === "/system/python"
+          ? "/system/python"
+          : command === "/venv/bin/python"
+            ? command
+            : undefined,
+      ),
+    ),
+  );
+
+  for (const selected of [true, false]) {
+    it.effect(`preserves managed ownership when also found on PATH (selected=${selected})`, () =>
+      Effect.gen(function* () {
+        const adapter = makePythonRuntimeAdapter(() => Effect.never, "/bridge.py", {
+          managedRuntime: () =>
+            Effect.succeed({
+              executable: "/managed/python",
+              selected,
+              available: true,
+              version: "3.12.13",
+            }),
+        });
+        const rows = yield* adapter.listInstallations!({
+          projectRoot: null,
+          configuredExecutable: "/managed/python",
+          refresh: true,
+        });
+        expect(rows).toEqual([
+          {
+            executable: "/managed/python",
+            source: "managed",
+            configured: true,
+            version: "3.12.13",
+            problem: null,
+          },
+        ]);
+      }).pipe(
+        Effect.provideService(HostProcessPlatform, "darwin"),
+        Effect.provideService(HostProcessEnvironment, {}),
+        Effect.provideService(SpawnExecutableResolution, () => "/managed/python"),
+      ),
+    );
+  }
+
+  it.effect("preserves managed selection and venv identity without spawning a probe", () =>
+    Effect.gen(function* () {
+      let available = true;
+      const adapter = makePythonRuntimeAdapter(() => Effect.never, "/bridge.py", {
+        managedRuntime: () =>
+          Effect.succeed({
+            executable: "/managed/venv/bin/python",
+            selected: true,
+            available,
+            version: "3.12.13",
+          }),
+      });
+      const request = {
+        projectRoot: null,
+        configuredExecutable: "/project/venv/bin/python",
+        refresh: true,
+      };
+      const first = yield* adapter.listInstallations!(request);
+      expect(first).toEqual([
+        {
+          executable: "/managed/venv/bin/python",
+          source: "managed",
+          version: "3.12.13",
+          problem: null,
+        },
+        {
+          executable: "/project/venv/bin/python",
+          source: "configured",
+          configured: true,
+          version: null,
+          problem: null,
+        },
+      ]);
+      available = false;
+      expect((yield* adapter.listInstallations!(request))[0]?.problem).toContain("repair");
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "darwin"),
+      Effect.provideService(HostProcessEnvironment, {}),
+      Effect.provideService(SpawnExecutableResolution, (command) =>
+        command.startsWith("/") ? command : undefined,
+      ),
+    ),
+  );
+
+  it.effect("shows a missing explicit executable without silently selecting PATH Python", () =>
+    Effect.gen(function* () {
+      const adapter = makePythonRuntimeAdapter(() => Effect.never, "/bridge.py");
+      expect(
+        yield* adapter.listInstallations!({
+          projectRoot: null,
+          configuredExecutable: "/missing/python",
+          refresh: true,
+        }),
+      ).toEqual([
+        {
+          executable: "/missing/python",
+          source: "configured",
+          configured: true,
+          version: null,
+          problem: expect.stringContaining("not found"),
+        },
+        { executable: "/usr/bin/python3", source: "path", version: null, problem: null },
+      ]);
+    }).pipe(
+      Effect.provideService(HostProcessPlatform, "darwin"),
+      Effect.provideService(HostProcessEnvironment, {}),
+      Effect.provideService(SpawnExecutableResolution, (command) =>
+        command === "python3" ? "/usr/bin/python3" : undefined,
+      ),
+    ),
+  );
+});
 
 describe("python probe parsing", () => {
   it("parses valid probe output", () => {
@@ -210,6 +359,7 @@ describe("python fingerprint", () => {
     expect(fp.contributors).toContain("prefix");
     expect(fp.contributors).toContain("jupyter_client");
     expect(fp.contributors).toContain("ipykernel");
+    expect(fp.contributors).toContain("scipy");
   });
 
   it("changes when the selected executable contents change at the same path", () => {
@@ -227,6 +377,26 @@ describe("python candidate discovery", () => {
   it("places configured executable first", () => {
     const candidates = discoverCandidates("/project", "/custom/python", "darwin");
     expect(candidates[0]).toEqual({ executable: "/custom/python", source: "configured" });
+  });
+
+  it("places explicitly selected managed Python before an existing configured runtime", () => {
+    const candidates = discoverCandidates("/nonexistent", "/custom/python", "darwin", {
+      executable: "/managed/python",
+      selected: true,
+    });
+    expect(candidates.slice(0, 2)).toEqual([
+      { executable: "/managed/python", source: "managed" },
+      { executable: "/custom/python", source: "configured" },
+    ]);
+  });
+
+  it("keeps an installed but unselected managed runtime behind existing runtimes", () => {
+    const candidates = discoverCandidates("/nonexistent", "/custom/python", "darwin", {
+      executable: "/managed/python",
+      selected: false,
+    });
+    expect(candidates[0]).toEqual({ executable: "/custom/python", source: "configured" });
+    expect(candidates.at(-1)).toEqual({ executable: "/managed/python", source: "managed" });
   });
 
   it("places project .venv before PATH candidates", () => {
@@ -359,6 +529,106 @@ describe("python runtime adapter", () => {
     }),
   );
 
+  it.effect("does not let a stale configured path replace selected managed Python", () =>
+    Effect.gen(function* () {
+      const adapter = makePythonRuntimeAdapter(
+        (executable) =>
+          executable === "/managed/python"
+            ? Effect.succeed(JSON.stringify({ ...parseProbeOutput(validProbeOutput), executable }))
+            : fakeFailingProbe(executable),
+        "/app/bridge.py",
+        {
+          managedRuntime: () => Effect.succeed({ executable: "/managed/python", selected: true }),
+        },
+      );
+      const profiles = yield* adapter.discover({
+        projectRoot: null,
+        configuredExecutable: "/removed/python",
+      });
+      expect(profiles[0]).toMatchObject({ source: "managed", executable: "/managed/python" });
+      expect(profiles[1]).toMatchObject({
+        source: "configured",
+        executable: "/removed/python",
+        languageVersion: "unknown",
+      });
+    }),
+  );
+
+  it.effect("reports a missing selected managed runtime without choosing another Python", () =>
+    Effect.gen(function* () {
+      const adapter = makePythonRuntimeAdapter(fakeFailingProbe, "/app/bridge.py", {
+        managedRuntime: () => Effect.succeed({ executable: "/managed/python", selected: true }),
+      });
+      const profiles = yield* adapter.discover({
+        projectRoot: null,
+        configuredExecutable: "/custom/python",
+      });
+      expect(profiles[0]).toMatchObject({
+        source: "managed",
+        executable: "/managed/python",
+        languageVersion: "unknown",
+      });
+    }),
+  );
+
+  it.effect(
+    "keeps an unavailable managed choice first while allowing an explicit existing choice",
+    () =>
+      Effect.gen(function* () {
+        const probed: string[] = [];
+        const adapter = makePythonRuntimeAdapter(
+          (executable) => {
+            probed.push(executable);
+            return executable === "/custom/python"
+              ? Effect.succeed(
+                  JSON.stringify({ ...parseProbeOutput(validProbeOutput), executable }),
+                )
+              : fakeFailingProbe(executable);
+          },
+          "/app/bridge.py",
+          {
+            managedRuntime: () =>
+              Effect.succeed({ executable: "/managed/python", selected: true, available: false }),
+          },
+        );
+        const profiles = yield* adapter.discover({
+          projectRoot: null,
+          configuredExecutable: "/custom/python",
+          refresh: true,
+        });
+        expect(profiles[0]).toMatchObject({ source: "managed", languageVersion: "unknown" });
+        expect(profiles[1]).toMatchObject({ source: "configured", executable: "/custom/python" });
+        expect(
+          (yield* adapter.verify({ profile: profiles[0]!, cwd: "/project", environment: {} }))
+            .readiness,
+        ).toBe("unusable");
+        expect(probed).not.toContain("/managed/python");
+      }),
+  );
+
+  it.effect("does not silently choose system Python when managed-state inspection fails", () =>
+    Effect.gen(function* () {
+      let probed = false;
+      const failure = new ComputeRuntimeError({
+        operation: "discover",
+        message: "Managed root is unsafe.",
+      });
+      const adapter = makePythonRuntimeAdapter(
+        () => {
+          probed = true;
+          return Effect.succeed(validProbeOutput);
+        },
+        "/app/bridge.py",
+        { managedRuntime: () => Effect.fail(failure) },
+      );
+      const result = yield* Effect.result(
+        adapter.discover({ projectRoot: null, configuredExecutable: null }),
+      );
+      expect(result).toMatchObject({ _tag: "Failure", failure });
+      expect(probed).toBe(false);
+    }),
+  );
+
   it.effect("verifies a ready environment", () =>
     Effect.gen(function* () {
       const adapter = makePythonRuntimeAdapter(fakeSpawnProbe(validProbeOutput), "/app/bridge.py");
@@ -369,6 +639,14 @@ describe("python runtime adapter", () => {
       });
       expect(verification.readiness).toBe("ready");
       expect(verification.message).toBeNull();
+      expect(verification.packages).toEqual([
+        { name: "ipykernel", version: "6.29.0" },
+        { name: "jupyter_client", version: "8.6.1" },
+        { name: "matplotlib", version: "3.9.0" },
+        { name: "numpy", version: "1.26.0" },
+        { name: "pandas", version: "2.2.0" },
+        { name: "scipy", version: null },
+      ]);
     }),
   );
 

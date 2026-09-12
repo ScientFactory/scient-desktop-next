@@ -11,15 +11,15 @@ describe("Scient file surface seams", () => {
     );
     expect(source).toContain("ScientFileAuxiliarySurface");
     expect(source.match(/<ScientFileAuxiliarySurface/gu)).toHaveLength(1);
-    expect(source).toContain("ScientPythonComputeSurface");
-    expect(source.match(/<ScientPythonComputeSurface/gu)).toHaveLength(1);
+    expect(source).toContain("ScientComputeFileSurface");
+    expect(source.match(/<ScientComputeFileSurface/gu)).toHaveLength(1);
     expect(source.match(/useWorkspaceFileRefresh\(/gu)).toHaveLength(1);
     expect(source).not.toMatch(/matlab|-batch|AnalysisRunFilePanel/iu);
   });
 
   it("keeps Python execution controls in the Scient-owned file surface", () => {
     const surface = NodeFS.readFileSync(
-      new URL("../compute/ScientPythonComputeSurface.tsx", import.meta.url),
+      new URL("../compute/ScientComputeFileSurface.tsx", import.meta.url),
       "utf8",
     );
     const results = NodeFS.readFileSync(
@@ -39,8 +39,8 @@ describe("Scient file surface seams", () => {
       "utf8",
     );
 
-    expect(surface).toContain("PythonFileComputeActions");
-    expect(surface).toContain("PYTHON_COMPUTE_VIEWS");
+    expect(surface).toContain("ComputeFileActions");
+    expect(surface).toContain("COMPUTE_FILE_VIEWS");
     expect(surface).toContain("ComputePanel");
     expect(results).not.toMatch(/<Textarea|Run code in this session/gu);
     expect(results).not.toMatch(/Code that ran|request\.code|revision\.slice/gu);

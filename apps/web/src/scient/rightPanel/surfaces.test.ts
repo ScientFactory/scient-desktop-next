@@ -19,6 +19,8 @@ import {
   PdfSourceDescriptor,
 } from "@scientfactory/document-artifacts";
 import type { PreviewStaticImageSurfaceDescriptor } from "~/previewStaticImageSurface";
+import type { ComputeContextId } from "~/scient/compute/computeContextStore";
+import { MAX_COMPUTE_CONTEXT_ID_LENGTH } from "~/scient/compute/computeContextStore";
 
 const artifact: PreviewStaticImageSurfaceDescriptor = {
   surfaceId: "project-a:script.m:figure-001",
@@ -97,6 +99,28 @@ describe("Scient right-panel surfaces", () => {
         cwd: "/research/Study\0bad",
       }),
     ).toBeNull();
+  });
+
+  it("distinguishes an owning Compute tab from the project overview", () => {
+    const contextId = "owner-1" as ComputeContextId;
+    const owner = scientComputeSurface({ cwd: "/project", contextId });
+    expect(owner).toEqual({
+      id: "scient:compute:%2Fproject:owner-1",
+      kind: "scient",
+      module: "compute",
+      cwd: "/project",
+      contextId,
+    });
+    expect(normalizeScientRightPanelSurface(owner)).toEqual(owner);
+    expect(scientComputeSurface({ cwd: "/project" }).id).not.toBe(owner.id);
+  });
+
+  it("does not discard a valid long persisted owning context id", () => {
+    const contextId = `context-${"x".repeat(2_048)}` as unknown as ComputeContextId;
+    const surface = scientComputeSurface({ cwd: "/project", contextId });
+
+    expect(contextId.length).toBeLessThanOrEqual(MAX_COMPUTE_CONTEXT_ID_LENGTH);
+    expect(normalizeScientRightPanelSurface(surface)).toEqual(surface);
   });
 
   it("normalizes recognized persisted descriptors and rejects unsafe ones", () => {
@@ -183,7 +207,9 @@ describe("Scient right-panel surfaces", () => {
 
   it("keeps user-visible titles inside the Scient-owned registry", () => {
     expect(scientRightPanelSurfaceTitle(scientSourcesSurface())).toBe("Sources");
-    expect(scientRightPanelSurfaceTitle(scientComputeSurface({ cwd: "/project" }))).toBe("Compute");
+    expect(scientRightPanelSurfaceTitle(scientComputeSurface({ cwd: "/project" }))).toBe(
+      "Compute history",
+    );
     expect(
       scientRightPanelSurfaceTitle(
         scientSourcePdfSurface({

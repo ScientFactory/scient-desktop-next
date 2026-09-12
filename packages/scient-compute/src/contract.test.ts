@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   ComputeOutput,
+  ComputeManagedRuntimeStatus,
   ComputeTransportEvent,
   ComputeVariableSnapshot,
   computeOutputByteLength,
@@ -13,6 +14,26 @@ const decodeTransportEvent = Schema.decodeUnknownSync(ComputeTransportEvent);
 const decodeVariableSnapshot = Schema.decodeUnknownSync(ComputeVariableSnapshot);
 
 describe("compute contract", () => {
+  it("accepts managed status from older hosts and preserves new generation identity", () => {
+    const decode = Schema.decodeUnknownSync(ComputeManagedRuntimeStatus);
+    const previousStatus = {
+      installed: true,
+      selection: "managed",
+      runtimeVersion: "Python 3.12.13",
+      toolkitRevision: "reviewed-1",
+      updateAvailable: false,
+      operation: null,
+      failureMessage: null,
+    };
+    expect(decode(previousStatus).generationId).toBeUndefined();
+    expect(decode({ ...previousStatus, generationId: "repaired-1" }).generationId).toBe(
+      "repaired-1",
+    );
+    expect(
+      decode({ ...previousStatus, installed: false, generationId: null }).generationId,
+    ).toBeNull();
+  });
+
   it("accepts observed timestamps only when they are ISO-8601 instants", () => {
     expect(
       decodeOutput({

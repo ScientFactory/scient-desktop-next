@@ -118,7 +118,8 @@ const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
 // v13 lets a source PDF open beside, rather than replace, the Sources library.
 // v14 adds stable direct artifact surfaces without persisting signed asset URLs.
 // v15 keys generated-PDF surfaces by stable artifact identity instead of revision.
-const RIGHT_PANEL_STORAGE_VERSION = 15;
+// v16 persists explicit Compute context ids on standalone owner tabs.
+const RIGHT_PANEL_STORAGE_VERSION = 16;
 /** A fixed workspace-level ref: each PR surface carries its own real environment. */
 export const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
   EnvironmentId.make("pull-requests-panel"),

@@ -68,6 +68,7 @@ const fakeRAdapter: ComputeLanguageAdapter = {
       readiness: "ready",
       missingRequirements: [],
       message: null,
+      packages: [],
     }),
   prepareLaunch: (request) =>
     Effect.succeed({

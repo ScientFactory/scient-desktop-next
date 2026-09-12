@@ -4,6 +4,7 @@ import * as NodeOS from "node:os";
 import { inspectScientProject, readScientProjectIdentity } from "@scientfactory/project-init";
 import {
   ComputeProjectId,
+  TERMINAL_COMPUTE_SESSION_STATUSES,
   type ComputeLanguageId,
   type ComputeSourceRange,
 } from "@scientfactory/compute";
@@ -12,6 +13,8 @@ import {
   type ComputeInspectRuntimesInput,
   type ComputeListProjectExecutionsInput,
   type ComputeListProjectOutputsInput,
+  type ComputeManagedRuntimeInput,
+  type ComputeManagedRuntimeStatusInput,
   type ComputeProjectExecutionCommandInput,
   type ComputeProjectInput,
   type ComputeProjectSessionCommandInput,
@@ -25,15 +28,20 @@ import {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import type * as ServerSettings from "../../serverSettings.ts";
 import type * as WorkspaceFileSystem from "../../workspace/WorkspaceFileSystem.ts";
+import type { ServerSettingsError } from "@t3tools/contracts";
+import type { LocalAnalysisStoreError } from "../analysis/LocalAnalysisStore.ts";
 import type { ComputeSessionService } from "./ComputeSessionService.ts";
 
 type ComputeGatewayService = Pick<
   ComputeSessionService["Service"],
   | "runtimeDescriptors"
+  | "runtimeInventory"
   | "inspectRuntimes"
   | "verifyRuntime"
+  | "managedRuntimeStatus"
+  | "manageRuntime"
+  | "cancelManagedRuntime"
   | "startSession"
   | "listSessions"
   | "getSession"
@@ -47,7 +55,12 @@ type ComputeGatewayService = Pick<
   | "inspectVariables"
   | "subscribeSessions"
 >;
-type ComputeGatewaySettings = Pick<ServerSettings.ServerSettingsService["Service"], "getSettings">;
+type ComputeGatewaySettings = {
+  readonly getSettings: Effect.Effect<
+    ServerSettingsValue,
+    ServerSettingsError | LocalAnalysisStoreError
+  >;
+};
 type ComputeGatewayWorkspace = Pick<WorkspaceFileSystem.WorkspaceFileSystem["Service"], "readFile">;
 
 type GatewayOperation = ComputeGatewayError["operation"];
@@ -147,6 +160,31 @@ export function makeComputeRpcGateway(input: {
     return { descriptor, preference };
   });
 
+  const runtimeInventory = Effect.fn("ComputeRpcGateway.runtimeInventory")(function* () {
+    const settings = yield* readSettings("inspect");
+    const preferences = Object.fromEntries(
+      input.compute.runtimeDescriptors.map((descriptor) => [
+        descriptor.languageId,
+        languageSettings(settings, descriptor.languageId),
+      ]),
+    );
+    const languages = yield* input.compute.runtimeInventory({
+      configuredExecutables: Object.fromEntries(
+        Object.entries(preferences).map(([id, preference]) => [id, preference.executable || null]),
+      ),
+      enabledLanguageIds: new Set(
+        Object.entries(preferences).flatMap(([id, preference]) => (preference.enabled ? [id] : [])),
+      ),
+    });
+    return {
+      languages: languages.map((language) => ({
+        ...language,
+        enabled: preferences[language.descriptor.languageId]?.enabled ?? false,
+        configuredExecutable: preferences[language.descriptor.languageId]?.executable || null,
+      })),
+    };
+  });
+
   const inspectRuntimes = Effect.fn("ComputeRpcGateway.inspectRuntimes")(function* (
     request: ComputeInspectRuntimesInput,
   ) {
@@ -179,6 +217,7 @@ export function makeComputeRpcGateway(input: {
       scope: project === null ? ("environment" as const) : ("project" as const),
       languages: inspected.map((language) => ({
         ...language,
+        managedRuntime: language.managedRuntime ?? null,
         enabled: preferences[language.descriptor.languageId]?.enabled ?? false,
         configuredExecutable: preferences[language.descriptor.languageId]?.executable || null,
       })),
@@ -206,6 +245,24 @@ export function makeComputeRpcGateway(input: {
     });
   });
 
+  const managedRuntimeStatus = Effect.fn("ComputeRpcGateway.managedRuntimeStatus")(function* (
+    request: ComputeManagedRuntimeStatusInput,
+  ) {
+    return yield* input.compute.managedRuntimeStatus(request.languageId);
+  });
+
+  const manageRuntime = Effect.fn("ComputeRpcGateway.manageRuntime")(function* (
+    request: ComputeManagedRuntimeInput,
+  ) {
+    return yield* input.compute.manageRuntime(request.languageId, request.action);
+  });
+
+  const cancelManagedRuntime = Effect.fn("ComputeRpcGateway.cancelManagedRuntime")(function* (
+    request: ComputeManagedRuntimeStatusInput,
+  ) {
+    return yield* input.compute.cancelManagedRuntime(request.languageId);
+  });
+
   const startSession = Effect.fn("ComputeRpcGateway.startSession")(function* (
     request: ComputeStartProjectSessionInput,
   ) {
@@ -217,8 +274,8 @@ export function makeComputeRpcGateway(input: {
       languageId: request.languageId,
       label: descriptor.displayName,
       workingDirectory: project.root,
-      configuredExecutable:
-        request.executable ?? (preference.executable.length === 0 ? null : preference.executable),
+      configuredExecutable: preference.executable.length === 0 ? null : preference.executable,
+      ...(request.executable === null ? {} : { requestedExecutable: request.executable }),
     });
   });
 
@@ -227,7 +284,14 @@ export function makeComputeRpcGateway(input: {
   ) {
     const project = yield* projectFor("list", request.cwd);
     const sessions = yield* input.compute.listSessions({ projectId: project.projectId });
-    return sessions.slice(-100).toReversed();
+    const recent = new Set(sessions.slice(-100).map((session) => session.sessionId));
+    // History is bounded; live owners must never disappear behind newer history.
+    return sessions
+      .filter(
+        (session) =>
+          !TERMINAL_COMPUTE_SESSION_STATUSES.has(session.status) || recent.has(session.sessionId),
+      )
+      .toReversed();
   });
 
   const getSession = Effect.fn("ComputeRpcGateway.getSession")(function* (
@@ -344,8 +408,12 @@ export function makeComputeRpcGateway(input: {
   });
 
   return {
+    runtimeInventory,
     inspectRuntimes,
     verifyRuntime,
+    managedRuntimeStatus,
+    manageRuntime,
+    cancelManagedRuntime,
     startSession,
     listSessions,
     getSession,

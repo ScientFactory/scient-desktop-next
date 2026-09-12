@@ -72,6 +72,8 @@ import {
 } from "~/scient/fileOpening/fileOpeningPolicy";
 import { scientificSourceLanguageOverride } from "~/scient/analysis/sourceLanguage";
 import { ScientFileAuxiliarySurface } from "~/scient/fileSurfaces/ScientFileAuxiliarySurface";
+import { computeSourceLanguageForPath } from "~/scient/compute/computeSourceLanguage";
+import { computeFileContextId } from "~/scient/compute/computeContextStore";
 import { ScientMarkdownRenameButton } from "~/scient/markdownEditor/ui/ScientMarkdownRenameButton";
 import {
   isScientMarkdownDocumentPath,
@@ -220,6 +222,15 @@ const FILE_LINK_REVEAL_UNSAFE_CSS = `
     color: var(--diffs-fg-number) !important;
   }
 `;
+const FILE_EDITOR_ACTION_GUTTER_UNSAFE_CSS = `
+  ${FILE_LINK_REVEAL_UNSAFE_CSS}
+
+  [data-gutter-utility-slot] {
+    right: auto;
+    left: 0;
+    justify-content: flex-start;
+  }
+`;
 const ScientPdfReader = lazy(() =>
   import("~/scient/pdf/ScientPdfReader").then((module) => ({
     default: module.ScientPdfReader,
@@ -230,9 +241,9 @@ const ScientLatexSurface = lazy(() =>
     default: module.ScientLatexSurface,
   })),
 );
-const ScientPythonComputeSurface = lazy(() =>
-  import("~/scient/compute/ScientPythonComputeSurface").then((module) => ({
-    default: module.ScientPythonComputeSurface,
+const ScientComputeFileSurface = lazy(() =>
+  import("~/scient/compute/ScientComputeFileSurface").then((module) => ({
+    default: module.ScientComputeFileSurface,
   })),
 );
 const ScientMarkdownFileSurface = lazy(() =>
@@ -1198,7 +1209,10 @@ function EditableFileEditor({
                 theme: resolveDiffThemeName(resolvedTheme),
                 preferredHighlighter: PREFERRED_HIGHLIGHTER,
                 themeType: resolvedTheme,
-                unsafeCSS: FILE_LINK_REVEAL_UNSAFE_CSS,
+                unsafeCSS:
+                  renderEditorGutterAction === undefined
+                    ? FILE_LINK_REVEAL_UNSAFE_CSS
+                    : FILE_EDITOR_ACTION_GUTTER_UNSAFE_CSS,
                 onPostRender: handlePostRender,
               }}
               selectedLines={displayedRange}
@@ -1401,6 +1415,17 @@ export default function FilePreviewPanel({
     null,
   );
   const breadcrumbRef = useRef<HTMLDivElement>(null);
+  const computeSourceLanguage =
+    relativePath === null ? null : computeSourceLanguageForPath(relativePath);
+  const computeContextId =
+    relativePath === null || computeSourceLanguage === null
+      ? null
+      : computeFileContextId({
+          environmentId,
+          threadId: threadRef.threadId,
+          cwd,
+          relativePath,
+        });
   const isMarkdownPreview = relativePath ? isMarkdownPreviewFile(relativePath) : false;
   const isRichMarkdown = relativePath ? isScientMarkdownDocumentPath(relativePath) : false;
   const isMarkdownDocument = isMarkdownPreview || isRichMarkdown;
@@ -1996,7 +2021,7 @@ export default function FilePreviewPanel({
                   saveResolution={saveResolution}
                 />
               </Suspense>
-            ) : relativePath.toLowerCase().endsWith(".py") && !file.data.truncated ? (
+            ) : computeSourceLanguage !== null && !file.data.truncated ? (
               <Suspense
                 fallback={
                   <div className="flex min-h-0 flex-1 items-center justify-center text-muted-foreground">
@@ -2004,10 +2029,12 @@ export default function FilePreviewPanel({
                   </div>
                 }
               >
-                <ScientPythonComputeSurface
-                  key={`${relativePath}:${resolvedTheme}`}
+                <ScientComputeFileSurface
+                  key={`${computeContextId}:${resolvedTheme}`}
+                  language={computeSourceLanguage}
                   environmentId={environmentId}
                   threadRef={threadRef}
+                  contextId={computeContextId!}
                   cwd={cwd}
                   relativePath={relativePath}
                   composerDraftTarget={composerDraftTarget}

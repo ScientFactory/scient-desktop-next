@@ -7,6 +7,10 @@ import {
   type PdfSourceDescriptor as PdfSourceDescriptorType,
 } from "@scientfactory/document-artifacts";
 import * as Schema from "effect/Schema";
+import {
+  MAX_COMPUTE_CONTEXT_ID_LENGTH,
+  type ComputeContextId,
+} from "~/scient/compute/computeContextStore";
 
 type GeneratedPdfSourceDescriptor = Extract<
   PdfSourceDescriptorType,
@@ -21,6 +25,8 @@ export type ScientRightPanelSurface =
       readonly kind: "scient";
       readonly module: "compute";
       readonly cwd: string;
+      /** Absent means the project Compute overview; present means an owning tab. */
+      readonly contextId?: ComputeContextId;
     }
   | {
       readonly id: `scient:source-pdf:${string}`;
@@ -56,12 +62,16 @@ export function scientSourcesSurface(): Extract<ScientRightPanelSurface, { modul
 
 export function scientComputeSurface(input: {
   readonly cwd: string;
+  readonly contextId?: ComputeContextId;
 }): Extract<ScientRightPanelSurface, { module: "compute" }> {
+  const contextSuffix =
+    input.contextId === undefined ? "" : `:${encodeURIComponent(input.contextId)}`;
   return {
-    id: `scient:compute:${encodeURIComponent(input.cwd)}`,
+    id: `scient:compute:${encodeURIComponent(input.cwd)}${contextSuffix}`,
     kind: "scient",
     module: "compute",
     cwd: input.cwd,
+    ...(input.contextId === undefined ? {} : { contextId: input.contextId }),
   };
 }
 
@@ -139,7 +149,20 @@ export function normalizeScientRightPanelSurface(value: unknown): ScientRightPan
     surface.cwd.length <= 4_096 &&
     !surface.cwd.includes("\0")
   ) {
-    return scientComputeSurface({ cwd: surface.cwd });
+    const contextId = surface.contextId;
+    if (
+      contextId !== undefined &&
+      (typeof contextId !== "string" ||
+        contextId.length === 0 ||
+        contextId.length > MAX_COMPUTE_CONTEXT_ID_LENGTH ||
+        contextId.includes("\0"))
+    ) {
+      return null;
+    }
+    return scientComputeSurface({
+      cwd: surface.cwd,
+      ...(contextId === undefined ? {} : { contextId: contextId as ComputeContextId }),
+    });
   }
   if (
     surface.module === "source-pdf" &&
@@ -183,7 +206,7 @@ export function scientRightPanelSurfaceTitle(surface: ScientRightPanelSurface): 
     case "sources":
       return "Sources";
     case "compute":
-      return "Compute";
+      return surface.contextId === undefined ? "Compute history" : "Compute";
     case "source-pdf":
       return surface.fileName;
     case "artifact":

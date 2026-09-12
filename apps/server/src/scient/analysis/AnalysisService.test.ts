@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Promise adapter fixtures write only scoped synthetic staging.
 import * as NodeFSP from "node:fs/promises";
 import { initializeScientProject, readScientProjectIdentity } from "@scientfactory/project-init";
+import { ComputeLanguageId } from "@t3tools/contracts";
 import {
   AnalysisArtifactFileName,
   AnalysisArtifactId,
@@ -29,6 +30,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
+import * as ServerSettings from "../../serverSettings.ts";
+import * as ScientificRuntimePreferences from "../compute/ScientificRuntimePreferences.ts";
 import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { AnalyticsService, type AnalyticsStatus } from "../../telemetry/AnalyticsService.ts";
 import * as WorkspaceFileSystem from "../../workspace/WorkspaceFileSystem.ts";
@@ -188,7 +191,15 @@ const makeServiceTestLayer = Effect.fn("makeServiceTestLayer")(function* (
         Effect.map(LocalAnalysisStore.LocalAnalysisStore, transformStore),
       ).pipe(Layer.provide(localStoreLayer))
     : localStoreLayer;
+  const settingsLayer = ServerSettings.layerTest();
   const analysisLayer = layerWithAdapters([adapter]).pipe(
+    Layer.provide(
+      ScientificRuntimePreferences.layer.pipe(
+        Layer.provide(serviceStoreLayer),
+        Layer.provide(settingsLayer),
+      ),
+    ),
+    Layer.provideMerge(settingsLayer),
     Layer.provide(serviceStoreLayer),
     Layer.provide(indexLayer),
     Layer.provide(Layer.succeed(LocalExecutionProcess.ExecutionProcess, processPort)),
@@ -926,6 +937,42 @@ describe("analysis service coordination", () => {
           expect(yield* Ref.get(harness.processStartCount)).toBe(2);
         }).pipe(Effect.provide(harness.analysisLayer)),
       );
+    }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
+  it.effect("never caches an old MATLAB profile under a failed new settings choice", () =>
+    Effect.gen(function* () {
+      let failNewChoice = true;
+      const harness = yield* makeServiceTestLayer({
+        ...testAdapter,
+        inspect: async (input) => {
+          if (input.customExecutablePath === "/new/matlab" && failNewChoice)
+            throw new Error("Installation is temporarily unavailable");
+          return testAdapter.inspect(input);
+        },
+      });
+      yield* Effect.gen(function* () {
+        const service = yield* AnalysisService;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        yield* service.inspectRuntimes({ cwd: harness.projectRoot });
+        yield* settings.updateSettings({
+          scientificComputing: {
+            languages: {
+              [ComputeLanguageId.make("matlab")]: { executable: "/new/matlab" },
+            },
+          },
+        });
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          expect(
+            Exit.isFailure(
+              yield* Effect.exit(service.inspectRuntimes({ cwd: harness.projectRoot })),
+            ),
+          ).toBe(true);
+        }
+        failNewChoice = false;
+        const recovered = yield* service.inspectRuntimes({ cwd: harness.projectRoot });
+        expect(recovered.runtimes[0]?.executablePath).toBe("/new/matlab");
+      }).pipe(Effect.provide(harness.analysisLayer));
     }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
   );
 

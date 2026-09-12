@@ -37,6 +37,7 @@ export function computeFigureRevision(
   return {
     sessionCreatedAt: session.createdAt,
     sessionId: session.sessionId,
+    generation: execution.request.generation,
     submittedAt: execution.request.submittedAt,
     executionId: execution.request.executionId,
   };
@@ -74,6 +75,7 @@ export function latestSuccessfulFigureExecution(
       )
       .toSorted(
         (left, right) =>
+          right.request.generation - left.request.generation ||
           right.request.submittedAt.localeCompare(left.request.submittedAt) ||
           right.request.executionId.localeCompare(left.request.executionId),
       )[0] ?? null
@@ -134,7 +136,11 @@ export function reconcileComputeFigureTarget(input: {
             executionId: execution.request.executionId,
             output: match,
           });
-    return { _tag: "apply", descriptor, revision };
+    return {
+      _tag: "apply",
+      descriptor: { ...descriptor, statusLabel: "Observed project file" },
+      revision,
+    };
   }
 
   if (outputs === null) return { _tag: "unchanged" };
@@ -149,5 +155,16 @@ export function reconcileComputeFigureTarget(input: {
           executionId: execution.request.executionId,
           output: match,
         });
-  return { _tag: "apply", descriptor, revision };
+  return {
+    _tag: "apply",
+    descriptor:
+      input.reference.displayId === undefined
+        ? descriptor
+        : {
+            ...descriptor,
+            label: input.artifact.label,
+            fileName: input.artifact.fileName,
+          },
+    revision,
+  };
 }

@@ -27,16 +27,21 @@ export function ScientFileAuxiliarySurface(props: ScientFileAuxiliarySurfaceProp
   }
 
   return (
-    <AnalysisRunFilePanel
-      key={`${props.environmentId}:${props.cwd}:${props.relativePath}`}
-      environmentId={props.environmentId}
-      threadRef={props.threadRef}
-      cwd={props.cwd}
-      relativePath={props.relativePath}
-      sourceRevision={props.sourceRevision}
-      sourcePending={props.sourcePending}
-      runtimeKind="matlab"
-      runtimeLabel="MATLAB"
-    />
+    <details className="shrink-0 border-t border-border/70">
+      <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">
+        Fresh-process MATLAB runs
+      </summary>
+      <AnalysisRunFilePanel
+        key={`${props.environmentId}:${props.cwd}:${props.relativePath}`}
+        environmentId={props.environmentId}
+        threadRef={props.threadRef}
+        cwd={props.cwd}
+        relativePath={props.relativePath}
+        sourceRevision={props.sourceRevision}
+        sourcePending={props.sourcePending}
+        runtimeKind="matlab"
+        runtimeLabel="MATLAB"
+      />
+    </details>
   );
 }

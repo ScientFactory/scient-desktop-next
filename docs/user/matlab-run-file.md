@@ -5,7 +5,34 @@ figures, and save useful results beside the rest of the project. Scient can
 always open and edit a `.m` file. Running it additionally requires a
 user-installed and licensed MATLAB in the selected project environment.
 
-## Run a file
+## Live session
+
+The code/results controls above a `.m` file run it in a live MATLAB session.
+Enable MATLAB and check its runtime in **Settings → Scientific Computing**.
+The Engine connection requires a compatible Python host. Settings can set up a
+small private **MATLAB connection helper**, or use an existing compatible host.
+Scient does not install MATLAB or its license. **MATLAB ready** and **Set up MATLAB** both open those
+settings, and the nearby refresh action checks detection again.
+
+In Settings, **Detected** means the Engine import is available; **Verify connection**
+starts and closes a temporary native MATLAB session to check the license and startup.
+The executable preference is shared with fresh-process runs. Their older setup control
+now writes this same preference instead of maintaining a second runtime choice.
+See [Connect your MATLAB installation](scientific-computing.md#connect-your-matlab-installation)
+for setup, repair, removal, and the distinction between the helper and MATLAB itself.
+
+On macOS, MATLAB may check its usual Documents folder during startup. If macOS
+asks whether Scient can access Documents, answer that permission prompt before
+retrying the session. Scient does not grant operating-system permissions for you.
+
+Use **Run file**, **Run selection**, or **Run cell** for `%%` sections. Variables
+remain available between runs until the session stops or restarts. Results and
+Variables share the same panel used by Python. Running code is not sandboxed.
+
+For saved-file batch execution and portable run artifacts, expand
+**Fresh-process MATLAB runs** below the file. This is the existing workflow:
+
+## Fresh-process file run
 
 1. Open an initialized Scient project and select a text `.m` file.
 2. Wait for any pending save to finish. Scient runs the exact saved version,
@@ -56,9 +83,9 @@ overwrite it instead of silently discarding either version. Figure-capture
 failure is reported separately from calculation failure, and long output shows
 an explicit truncation notice.
 
-This workflow runs a complete `.m` file in noninteractive batch mode. It does
-not currently provide selection or section execution, a live variables
-workspace, debugging, MATLAB notebooks, or viewers for `.mlx` and `.mat`
-files. Use **Verify** in each environment to confirm that its installed MATLAB
+The fresh-process workflow runs a complete `.m` file in noninteractive batch
+mode, independently of a live Compute session. Neither workflow adds debugging,
+MATLAB notebooks, or viewers for `.mlx` and `.mat` files. Use **Verify** in each
+environment to confirm that its installed MATLAB
 version, architecture, license, and dependencies are ready before relying on a
 run.

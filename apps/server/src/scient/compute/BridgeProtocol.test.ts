@@ -116,6 +116,53 @@ describe("bridge protocol payload schemas", () => {
     expect(payload.code).toBe("print('hello')\n");
   });
 
+  it("accepts optional source facts without changing the submitted code", () => {
+    const payload = decodeExecute({
+      code: "print('cell')\n",
+      silent: false,
+      storeHistory: true,
+      sourceContext: {
+        kind: "selection",
+        filePath: "analysis/notebook.py",
+        fileName: "notebook.py",
+        sourceBytesHash: "submitted-code-hash",
+        sourceRevision: "revision-7",
+        saved: false,
+        startLine: 3,
+        startColumn: 0,
+        endLine: 4,
+        endColumn: 14,
+      },
+    });
+    expect(payload.sourceContext).toEqual({
+      kind: "selection",
+      filePath: "analysis/notebook.py",
+      fileName: "notebook.py",
+      sourceBytesHash: "submitted-code-hash",
+      sourceRevision: "revision-7",
+      saved: false,
+      startLine: 3,
+      startColumn: 0,
+      endLine: 4,
+      endColumn: 14,
+    });
+  });
+
+  it("keeps saved-file identity requirements in the bridge-facing shape", () => {
+    const payload = decodeExecute({
+      code: "run_saved()\n",
+      silent: false,
+      storeHistory: true,
+      sourceContext: {
+        kind: "file",
+        filePath: "analysis/run_saved.py",
+        sourceBytesHash: "sha256:abc123",
+        saved: true,
+      },
+    });
+    expect(payload.sourceContext?.saved).toBe(true);
+  });
+
   it("rejects an execute payload with oversized code", () => {
     expect(() =>
       decodeExecute({

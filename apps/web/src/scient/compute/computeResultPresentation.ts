@@ -1,4 +1,5 @@
 import {
+  projectComputeOutputs,
   sameComputeRepresentationBundle,
   type ComputeExecutionRecord,
   type ComputeOutput,
@@ -8,12 +9,61 @@ import {
 type ComputeExecutionSource = ComputeExecutionRecord["request"]["source"];
 type ComputeExecutionStatus = NonNullable<ComputeExecutionRecord["result"]>["status"];
 type ComputeSystemEvent = Extract<ComputeOutput, { readonly _tag: "system" }>["event"];
-export type ComputeStaticImageOutput = Extract<ComputeOutput, { readonly _tag: "image" }>;
+export const COMPUTE_NATIVE_FIGURE_MEDIA_TYPE = "application/vnd.mathworks.matlab.figure";
+// Matches the retained representation-bundle limit; native files are never decoded here.
+export const MAX_COMPUTE_NATIVE_FIGURE_BYTES = 8 * 1024 * 1024;
+
+export type ComputeFigureResource = {
+  readonly contentHash: Extract<ComputeOutput, { readonly _tag: "image" }>["contentHash"];
+  readonly byteLength: number;
+};
+
+/** Local presentation metadata; the retained output contract stays unchanged. */
+export type ComputeStaticImageOutput = Extract<ComputeOutput, { readonly _tag: "image" }> & {
+  readonly displayId?: string;
+  readonly nativeFigure?: ComputeFigureResource;
+};
+
+/** A standalone image update is itself a complete retained figure snapshot. */
+export function projectComputeFigureOutputs(
+  outputs: ReadonlyArray<ComputeOutput>,
+): ReadonlyArray<ComputeProjectedOutput> {
+  const displays = new Set<string>();
+  return projectComputeOutputs(
+    outputs.map((output): ComputeOutput => {
+      if (output._tag === "display-data" && output.displayId !== null)
+        displays.add(output.displayId);
+      if (
+        output._tag === "display-update" &&
+        !displays.has(output.displayId) &&
+        output.bundle.representations.some(
+          (item) =>
+            (item.mediaType === "image/png" || item.mediaType === "image/svg+xml") &&
+            item.data._tag === "resource",
+        )
+      ) {
+        displays.add(output.displayId);
+        return { ...output, _tag: "display-data" };
+      }
+      return output;
+    }),
+  );
+}
 
 /** Adapts one projected rich bundle into the existing producer-neutral image surface. */
 export function computeProjectedStaticImage(
   output: Extract<ComputeProjectedOutput, { readonly _tag: "representation" }>,
 ): ComputeStaticImageOutput | null {
+  const native = output.bundle.representations.find(
+    (item) => item.mediaType === COMPUTE_NATIVE_FIGURE_MEDIA_TYPE,
+  );
+  const nativeFigure =
+    native?.data._tag === "resource" &&
+    Number.isSafeInteger(native.data.byteLength) &&
+    native.data.byteLength > 0 &&
+    native.data.byteLength <= MAX_COMPUTE_NATIVE_FIGURE_BYTES
+      ? native.data
+      : null;
   for (const mediaType of ["image/svg+xml", "image/png"] as const) {
     const representation = output.bundle.representations.find(
       (candidate) => candidate.mediaType === mediaType && candidate.data._tag === "resource",
@@ -29,6 +79,8 @@ export function computeProjectedStaticImage(
       width: null,
       height: null,
       origin: { _tag: "runtime-display" },
+      ...(output.displayId === null ? {} : { displayId: output.displayId }),
+      ...(nativeFigure === null ? {} : { nativeFigure }),
     };
   }
   return null;
@@ -229,6 +281,7 @@ export function selectComputeFigureFallback(
     return (
       source._tag === "document" &&
       source.path === selectedSource.path &&
+      candidate.request.sessionId === selected.request.sessionId &&
       candidate.request.generation === selected.request.generation &&
       candidate.result?.status === "succeeded" &&
       candidate.result.imageCount > 0

@@ -13,6 +13,7 @@ export type McpCapability =
   | "preview"
   | "pull-requests"
   | "documents:build"
+  | "compute:read"
   | "skills:read"
   | "sources:read"
   | "sources:write";

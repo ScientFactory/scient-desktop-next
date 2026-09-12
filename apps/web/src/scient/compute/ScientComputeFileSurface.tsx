@@ -1,5 +1,10 @@
 import type { EditorSelection, FileOptions, SelectedLineRange } from "@pierre/diffs/react";
-import type { ComputeExecutionId, EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
+import type {
+  ComputeExecutionId,
+  ComputeSessionId,
+  EnvironmentId,
+  ScopedThreadRef,
+} from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Columns2, Play, Rows2 } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
@@ -14,31 +19,37 @@ import { useScientSplit } from "~/scient/layout/useScientSplit";
 import { ScientTooltip } from "~/scient/presentation/ScientTooltip";
 
 import { ComputePanel } from "./ComputePanel";
+import type { ComputeSourceLanguage } from "./computeSourceLanguage";
+import { ComputeFileActions, type ComputeFileActionsHandle } from "./ComputeFileActions";
+import type { ComputeContextId } from "./computeContextStore";
+import { computeActiveCell } from "./computeSourceSlices";
 import {
-  PythonFileComputeActions,
-  type PythonFileComputeActionsHandle,
-} from "./PythonFileComputeActions";
-import { pythonActiveCell } from "./pythonCells";
-import {
-  DEFAULT_PYTHON_COMPUTE_SPLIT,
-  DEFAULT_PYTHON_COMPUTE_SPLIT_LAYOUT,
-  MIN_PYTHON_COMPUTE_SPLIT,
-  PYTHON_COMPUTE_SPLIT_KEYBOARD_STEP,
-  PYTHON_COMPUTE_SPLIT_LAYOUT_STORAGE_KEY,
-  PYTHON_COMPUTE_SPLIT_STORAGE_KEY,
-  PYTHON_COMPUTE_VIEW_LABELS,
-  PYTHON_COMPUTE_VIEW_STORAGE_KEY,
-  PYTHON_COMPUTE_VIEWS,
-  normalizePythonComputeSplit,
-  normalizePythonComputeSplitLayout,
-  normalizePythonComputeView,
-  type PythonComputeSplitLayout,
-  type PythonComputeView,
-} from "./pythonComputeSurfaceModel";
+  DEFAULT_COMPUTE_FILE_SPLIT,
+  DEFAULT_COMPUTE_FILE_SPLIT_LAYOUT,
+  DEFAULT_COMPUTE_FILE_RESULTS_VIEW,
+  MIN_COMPUTE_FILE_SPLIT,
+  COMPUTE_FILE_SPLIT_KEYBOARD_STEP,
+  COMPUTE_FILE_SPLIT_LAYOUT_STORAGE_KEY,
+  COMPUTE_FILE_SPLIT_STORAGE_KEY,
+  COMPUTE_FILE_VIEW_LABELS,
+  COMPUTE_FILE_RESULTS_VIEW_STORAGE_KEY,
+  COMPUTE_FILE_VIEWS,
+  computeFileViewAfterRun,
+  normalizeComputeFileSplit,
+  normalizeComputeFileSplitLayout,
+  normalizeComputeFileResultsView,
+  type ComputeFileSplitLayout,
+  type ComputeFileResultsView,
+  type ComputeFileView,
+} from "./computeFileSurfaceModel";
 
 type FilePostRender = NonNullable<FileOptions<unknown>["onPostRender"]>;
 
-interface ScientPythonComputeSurfaceProps {
+const SEGMENT_BUTTON_CLASS =
+  "flex h-5.5 cursor-pointer items-center justify-center rounded-[5px] text-[11px] leading-[18px] text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset";
+
+interface ScientComputeFileSurfaceProps {
+  readonly language: ComputeSourceLanguage;
   readonly environmentId: EnvironmentId;
   readonly threadRef: ScopedThreadRef;
   readonly cwd: string;
@@ -56,38 +67,39 @@ interface ScientPythonComputeSurfaceProps {
   readonly onSaveConfirmed: (relativePath: string, contents: string, revision: string) => void;
   readonly onSaveResolutionApplied: () => void;
   readonly saveResolution: FileSaveResolution | null;
+  readonly contextId: ComputeContextId;
 }
 
-function initialView(): PythonComputeView {
+function initialResultsView(): ComputeFileResultsView {
   try {
-    return normalizePythonComputeView(
-      getLocalStorageItem(PYTHON_COMPUTE_VIEW_STORAGE_KEY, Schema.String),
+    return normalizeComputeFileResultsView(
+      getLocalStorageItem(COMPUTE_FILE_RESULTS_VIEW_STORAGE_KEY, Schema.String),
     );
   } catch (error) {
     console.error(error);
-    return normalizePythonComputeView(null);
+    return DEFAULT_COMPUTE_FILE_RESULTS_VIEW;
   }
 }
 
 function initialSplit(): number {
   try {
-    return normalizePythonComputeSplit(
-      getLocalStorageItem(PYTHON_COMPUTE_SPLIT_STORAGE_KEY, Schema.Number),
+    return normalizeComputeFileSplit(
+      getLocalStorageItem(COMPUTE_FILE_SPLIT_STORAGE_KEY, Schema.Number),
     );
   } catch (error) {
     console.error(error);
-    return DEFAULT_PYTHON_COMPUTE_SPLIT;
+    return DEFAULT_COMPUTE_FILE_SPLIT;
   }
 }
 
-function initialSplitLayout(): PythonComputeSplitLayout {
+function initialSplitLayout(): ComputeFileSplitLayout {
   try {
-    return normalizePythonComputeSplitLayout(
-      getLocalStorageItem(PYTHON_COMPUTE_SPLIT_LAYOUT_STORAGE_KEY, Schema.String),
+    return normalizeComputeFileSplitLayout(
+      getLocalStorageItem(COMPUTE_FILE_SPLIT_LAYOUT_STORAGE_KEY, Schema.String),
     );
   } catch (error) {
     console.error(error);
-    return DEFAULT_PYTHON_COMPUTE_SPLIT_LAYOUT;
+    return DEFAULT_COMPUTE_FILE_SPLIT_LAYOUT;
   }
 }
 
@@ -99,58 +111,70 @@ function persist<T, E>(key: string, value: T, schema: Schema.Codec<T, E>): void 
   }
 }
 
-export function ScientPythonComputeSurface(props: ScientPythonComputeSurfaceProps) {
-  const [view, setView] = useState(initialView);
+export function ScientComputeFileSurface(props: ScientComputeFileSurfaceProps) {
+  const [view, setView] = useState<ComputeFileView>("code");
+  const [preferredResultsView, setPreferredResultsView] =
+    useState<ComputeFileResultsView>(initialResultsView);
   const [split, setSplit] = useState(initialSplit);
-  const [splitLayout, setSplitLayout] = useState<PythonComputeSplitLayout>(initialSplitLayout);
+  const [splitLayout, setSplitLayout] = useState<ComputeFileSplitLayout>(initialSplitLayout);
   const [selection, setSelection] = useState<{
     readonly start: number;
     readonly end: number;
   } | null>(null);
   const [editorSelection, setEditorSelection] = useState<EditorSelection | null>(null);
-  const [focusExecutionId, setFocusExecutionId] = useState<ComputeExecutionId | null>(null);
-  const actionsRef = useRef<PythonFileComputeActionsHandle>(null);
+  const [focusExecution, setFocusExecution] = useState<{
+    readonly sessionId: ComputeSessionId;
+    readonly executionId: ComputeExecutionId;
+  } | null>(null);
+  const actionsRef = useRef<ComputeFileActionsHandle>(null);
 
   const activeCellRange = useMemo<SelectedLineRange | null>(() => {
-    const cell = pythonActiveCell(props.contents, editorSelection);
+    const cell = computeActiveCell(props.contents, editorSelection, props.language.cellMarker);
     return cell === null ? null : { start: cell.range.startLine + 1, end: cell.range.endLine + 1 };
-  }, [editorSelection, props.contents]);
+  }, [editorSelection, props.contents, props.language.cellMarker]);
   const hasExplicitCells = useMemo(
-    () => /^\s*#\s*%%(?:\s|$)/m.test(props.contents),
-    [props.contents],
+    () => props.contents.split(/\r?\n/).some((line) => props.language.cellMarker.test(line)),
+    [props.contents, props.language.cellMarker],
   );
 
-  const selectView = useCallback((next: PythonComputeView) => {
+  const selectView = useCallback((next: ComputeFileView) => {
     setView(next);
-    persist(PYTHON_COMPUTE_VIEW_STORAGE_KEY, next, Schema.String);
+    if (next === "code") return;
+    setPreferredResultsView(next);
+    persist(COMPUTE_FILE_RESULTS_VIEW_STORAGE_KEY, next, Schema.String);
   }, []);
-  const selectSplitLayout = useCallback((next: PythonComputeSplitLayout) => {
+  const selectSplitLayout = useCallback((next: ComputeFileSplitLayout) => {
     setSplitLayout(next);
-    persist(PYTHON_COMPUTE_SPLIT_LAYOUT_STORAGE_KEY, next, Schema.String);
+    persist(COMPUTE_FILE_SPLIT_LAYOUT_STORAGE_KEY, next, Schema.String);
   }, []);
   const commitSplit = useCallback((next: number) => {
     setSplit(next);
-    persist(PYTHON_COMPUTE_SPLIT_STORAGE_KEY, next, Schema.Number);
+    persist(COMPUTE_FILE_SPLIT_STORAGE_KEY, next, Schema.Number);
   }, []);
   const isStacked = view === "split" && splitLayout === "stacked";
   const { containerRef, primaryPaneRef, separatorHandlers } = useScientSplit({
     active: view === "split",
     axis: splitLayout === "stacked" ? "y" : "x",
     fraction: split,
-    minimum: MIN_PYTHON_COMPUTE_SPLIT,
-    fallback: DEFAULT_PYTHON_COMPUTE_SPLIT,
-    keyboardStep: PYTHON_COMPUTE_SPLIT_KEYBOARD_STEP,
+    minimum: MIN_COMPUTE_FILE_SPLIT,
+    fallback: DEFAULT_COMPUTE_FILE_SPLIT,
+    keyboardStep: COMPUTE_FILE_SPLIT_KEYBOARD_STEP,
     onCommit: commitSplit,
   });
+  const handleRunRequested = useCallback(() => {
+    setView((current) => computeFileViewAfterRun(current, preferredResultsView));
+  }, [preferredResultsView]);
+  const handleEmptyResultsRun = useCallback(() => {
+    actionsRef.current?.runPrimary();
+  }, []);
   const handleExecutionSubmitted = useCallback(
-    (executionId: ComputeExecutionId) => {
-      setFocusExecutionId(executionId);
-      selectView("split");
+    (sessionId: ComputeSessionId, executionId: ComputeExecutionId) => {
+      setFocusExecution({ sessionId, executionId });
     },
-    [selectView],
+    [],
   );
   const handleFocusConsumed = useCallback((executionId: string) => {
-    setFocusExecutionId((current) => (current === executionId ? null : current));
+    setFocusExecution((current) => (current?.executionId === executionId ? null : current));
   }, []);
 
   const showEditor = view !== "results";
@@ -158,24 +182,25 @@ export function ScientPythonComputeSurface(props: ScientPythonComputeSurfaceProp
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background" dir="ltr">
-      <div className="flex min-h-9 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/20 px-2 py-1">
+      <div className="flex min-h-9 shrink-0 flex-wrap items-center gap-x-2 gap-y-1 border-b border-border/60 bg-muted/20 px-2 py-1">
         <div
           className="flex shrink-0 items-center gap-px rounded-[6px] border border-border p-px"
           role="group"
-          aria-label="Python view layout"
+          aria-label={`${props.language.displayName} view layout`}
         >
-          {PYTHON_COMPUTE_VIEWS.map((candidate) => (
+          {COMPUTE_FILE_VIEWS.map((candidate) => (
             <button
               key={candidate}
               type="button"
               className={cn(
-                "cursor-pointer rounded-[5px] px-2 py-0.5 text-[11px] leading-[18px] text-muted-foreground hover:text-foreground",
+                SEGMENT_BUTTON_CLASS,
+                "px-2",
                 view === candidate && "bg-accent text-accent-foreground",
               )}
               aria-pressed={view === candidate}
               onClick={() => selectView(candidate)}
             >
-              {PYTHON_COMPUTE_VIEW_LABELS[candidate]}
+              {COMPUTE_FILE_VIEW_LABELS[candidate]}
             </button>
           ))}
         </div>
@@ -189,35 +214,38 @@ export function ScientPythonComputeSurface(props: ScientPythonComputeSurfaceProp
               <button
                 type="button"
                 className={cn(
-                  "flex size-5.5 cursor-pointer items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground",
+                  SEGMENT_BUTTON_CLASS,
+                  "w-5.5",
                   splitLayout === "side-by-side" && "bg-accent text-accent-foreground",
                 )}
                 aria-pressed={splitLayout === "side-by-side"}
                 aria-label="Arrange code and results side by side"
                 onClick={() => selectSplitLayout("side-by-side")}
               >
-                <Columns2 className="size-3.5" />
+                <Columns2 className="size-3" />
               </button>
             </ScientTooltip>
             <ScientTooltip content="Stacked">
               <button
                 type="button"
                 className={cn(
-                  "flex size-5.5 cursor-pointer items-center justify-center rounded-[5px] text-muted-foreground transition-colors hover:text-foreground",
+                  SEGMENT_BUTTON_CLASS,
+                  "w-5.5",
                   splitLayout === "stacked" && "bg-accent text-accent-foreground",
                 )}
                 aria-pressed={splitLayout === "stacked"}
                 aria-label="Stack code above results"
                 onClick={() => selectSplitLayout("stacked")}
               >
-                <Rows2 className="size-3.5" />
+                <Rows2 className="size-3" />
               </button>
             </ScientTooltip>
           </div>
         ) : null}
-        <div className="min-w-0 flex-1">
-          <PythonFileComputeActions
+        <div className="min-w-22 flex-1">
+          <ComputeFileActions
             ref={actionsRef}
+            language={props.language}
             environmentId={props.environmentId}
             cwd={props.cwd}
             relativePath={props.relativePath}
@@ -226,6 +254,8 @@ export function ScientPythonComputeSurface(props: ScientPythonComputeSurfaceProp
             sourcePending={props.sourcePending}
             selection={selection}
             editorSelection={editorSelection}
+            contextId={props.contextId}
+            onRunRequested={handleRunRequested}
             onExecutionSubmitted={handleExecutionSubmitted}
           />
         </div>
@@ -297,9 +327,9 @@ export function ScientPythonComputeSurface(props: ScientPythonComputeSurfaceProp
                 orientation={isStacked ? "horizontal" : "vertical"}
                 className={cn("absolute", isStacked ? "inset-x-0 -top-1" : "inset-y-0 -left-1")}
                 tabIndex={0}
-                aria-label="Resize Python results"
-                aria-valuemin={Math.round(MIN_PYTHON_COMPUTE_SPLIT * 100)}
-                aria-valuemax={Math.round((1 - MIN_PYTHON_COMPUTE_SPLIT) * 100)}
+                aria-label={`Resize ${props.language.displayName} results`}
+                aria-valuemin={Math.round(MIN_COMPUTE_FILE_SPLIT * 100)}
+                aria-valuemax={Math.round((1 - MIN_COMPUTE_FILE_SPLIT) * 100)}
                 aria-valuenow={Math.round(split * 100)}
                 {...separatorHandlers}
               />
@@ -309,10 +339,14 @@ export function ScientPythonComputeSurface(props: ScientPythonComputeSurfaceProp
               cwd={props.cwd}
               threadRef={props.threadRef}
               sourcePath={props.relativePath}
+              sourceLanguageId={props.language.languageId}
               sourceRevision={props.revision}
               sourcePending={props.sourcePending}
-              focusExecutionId={focusExecutionId}
+              contextId={props.contextId}
+              focusSessionId={focusExecution?.sessionId ?? null}
+              focusExecutionId={focusExecution?.executionId ?? null}
               onFocusConsumed={handleFocusConsumed}
+              onRunSource={handleEmptyResultsRun}
               embedded
             />
           </div>

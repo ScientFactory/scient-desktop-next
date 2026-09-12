@@ -37,8 +37,18 @@ import {
  * it here. Spelled out rather than imported because a build script that pulled
  * in a server module would pull in its dependencies with it.
  */
-const SCIENT_COMPUTE_BRIDGE_SOURCE = "src/scient/compute/bridge/scient_compute_bridge.py";
-const SCIENT_COMPUTE_BRIDGE_ASSET = "dist/scient-compute-bridge/scient_compute_bridge.py";
+const SCIENT_COMPUTE_BRIDGES = [
+  {
+    source: "src/scient/compute/bridge/scient_compute_bridge.py",
+    asset: "dist/scient-compute-bridge/scient_compute_bridge.py",
+  },
+  {
+    source: "src/scient/compute/bridge/scient_matlab_engine_bridge.py",
+    asset: "dist/scient-compute-bridge/scient_matlab_engine_bridge.py",
+  },
+] as const;
+const SCIENT_MANAGED_PYTHON_SOURCE = "src/scient/compute/managed-python";
+const SCIENT_MANAGED_PYTHON_ASSET = "dist/scient-managed-python";
 
 interface PackageJson {
   name: string;
@@ -184,18 +194,34 @@ const buildCmd = Command.make(
         yield* Effect.logWarning("[cli] Web dist not found — skipping client bundle.");
       }
 
-      // The Python compute bridge is data, not code the bundler can see: the
-      // server hands its path to an interpreter. Only the bridge itself is
-      // staged -- its own tests live beside it in the source tree and have no
-      // business in a release.
-      const bridgeSource = path.join(serverDir, SCIENT_COMPUTE_BRIDGE_SOURCE);
-      const bridgeTarget = path.join(serverDir, SCIENT_COMPUTE_BRIDGE_ASSET);
-      if (!(yield* fs.exists(bridgeSource))) {
-        return yield* new ServerCliBuildAssetMissingError({ assetPath: bridgeSource });
+      // Bridges are runtime data; stage their scripts, never their tests.
+      for (const bridge of SCIENT_COMPUTE_BRIDGES) {
+        const bridgeSource = path.join(serverDir, bridge.source);
+        const bridgeTarget = path.join(serverDir, bridge.asset);
+        if (!(yield* fs.exists(bridgeSource))) {
+          return yield* new ServerCliBuildAssetMissingError({ assetPath: bridgeSource });
+        }
+        yield* fs.makeDirectory(path.dirname(bridgeTarget), { recursive: true });
+        yield* fs.copyFile(bridgeSource, bridgeTarget);
+        yield* Effect.log(`[cli] Staged the compute bridge into ${bridge.asset}`);
       }
-      yield* fs.makeDirectory(path.dirname(bridgeTarget), { recursive: true });
-      yield* fs.copyFile(bridgeSource, bridgeTarget);
-      yield* Effect.log(`[cli] Staged the compute bridge into ${SCIENT_COMPUTE_BRIDGE_ASSET}`);
+
+      // The locked Scientific Python project is also runtime data. The server
+      // copies these exact reviewed inputs into each private generation; it
+      // must never resolve a package graph from source code or user config.
+      const managedPythonSource = path.join(serverDir, SCIENT_MANAGED_PYTHON_SOURCE);
+      const managedPythonTarget = path.join(serverDir, SCIENT_MANAGED_PYTHON_ASSET);
+      for (const file of ["pyproject.toml", "uv.lock"]) {
+        const source = path.join(managedPythonSource, file);
+        if (!(yield* fs.exists(source))) {
+          return yield* new ServerCliBuildAssetMissingError({ assetPath: source });
+        }
+        yield* fs.makeDirectory(managedPythonTarget, { recursive: true });
+        yield* fs.copyFile(source, path.join(managedPythonTarget, file));
+      }
+      yield* Effect.log(
+        `[cli] Staged the managed Python specification into ${SCIENT_MANAGED_PYTHON_ASSET}`,
+      );
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
 
@@ -251,7 +277,9 @@ const publishCmd = Command.make(
         "dist/bin.mjs",
         "dist/service-launcher.mjs",
         "dist/client/index.html",
-        SCIENT_COMPUTE_BRIDGE_ASSET,
+        ...SCIENT_COMPUTE_BRIDGES.map((bridge) => bridge.asset),
+        `${SCIENT_MANAGED_PYTHON_ASSET}/pyproject.toml`,
+        `${SCIENT_MANAGED_PYTHON_ASSET}/uv.lock`,
       ]) {
         const abs = path.join(serverDir, relPath);
         if (!(yield* fs.exists(abs))) {

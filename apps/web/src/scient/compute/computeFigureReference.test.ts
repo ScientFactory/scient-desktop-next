@@ -3,7 +3,9 @@ import {
   ComputeExecutionId,
   ComputeLanguageId,
   ComputeProjectId,
+  ComputeSessionGeneration,
   ComputeSessionId,
+  INITIAL_COMPUTE_SESSION_GENERATION,
   type ComputeOutput,
 } from "@t3tools/contracts";
 
@@ -57,12 +59,20 @@ describe("compute figure references", () => {
     const references: ReadonlyArray<ComputeFigureReference> = [
       { _tag: "snapshot", projectId, sessionId, executionId, contentHash: hash("a") },
       { _tag: "project-file", projectId, path: "results/figure one.svg" },
-      { _tag: "runtime-display", projectId, languageId, path: "analysis.py", ordinal: 2 },
+      {
+        _tag: "runtime-display",
+        projectId,
+        sessionId,
+        languageId,
+        path: "analysis.py",
+        ordinal: 2,
+      },
     ];
     for (const reference of references) {
       expect(parseComputeFigureSurfaceId(computeFigureSurfaceId(reference))).toEqual(reference);
     }
-    expect(parseComputeFigureSurfaceId("compute-figure:v2:project-file:x:y")).toBeNull();
+    expect(parseComputeFigureSurfaceId("compute-figure:v3:project-file:x:y")).toBeNull();
+    expect(parseComputeFigureSurfaceId("compute-figure:v1:runtime-display:x:y:z:1")).toBeNull();
     expect(parseComputeFigureSurfaceId("compute-figure:v1:runtime-display:x:y:z:0")).toBeNull();
     expect(parseComputeFigureSurfaceId("unrelated")).toBeNull();
   });
@@ -111,6 +121,7 @@ describe("compute figure references", () => {
     expect(make(true, savedFile)).toEqual({
       _tag: "runtime-display",
       projectId,
+      sessionId,
       languageId,
       path: "analysis.py",
       ordinal: 1,
@@ -121,6 +132,7 @@ describe("compute figure references", () => {
     const reference: ComputeFigureReference = {
       _tag: "runtime-display",
       projectId,
+      sessionId,
       languageId,
       path: "analysis.py",
       ordinal: 2,
@@ -137,6 +149,7 @@ describe("compute figure references", () => {
     const reference: ComputeFigureReference = {
       _tag: "runtime-display",
       projectId,
+      sessionId,
       languageId,
       path: "analysis.py",
       ordinal: 1,
@@ -166,6 +179,7 @@ describe("compute figure references", () => {
     const reference: ComputeFigureReference = {
       _tag: "runtime-display",
       projectId,
+      sessionId,
       languageId,
       path: "analysis.py",
       ordinal: 1,
@@ -174,6 +188,7 @@ describe("compute figure references", () => {
       request: {
         executionId,
         sessionId,
+        generation: 1,
         submittedAt: "2026-08-21T00:00:00.000Z",
         source: savedFile,
       },
@@ -213,10 +228,35 @@ describe("compute figure references", () => {
     ).toBe(false);
   });
 
+  it("does not let a same-file session steal a session-scoped runtime reference", () => {
+    const reference: ComputeFigureReference = {
+      _tag: "runtime-display",
+      projectId,
+      sessionId,
+      languageId,
+      path: "analysis.py",
+      ordinal: 1,
+    };
+    const otherSessionExecution = {
+      request: {
+        executionId,
+        sessionId: ComputeSessionId.make("session-2"),
+        generation: 1,
+        submittedAt: "2026-08-21T00:00:00.000Z",
+        source: savedFile,
+      },
+      result: null,
+    } as Parameters<typeof computeExecutionMayUpdateFigure>[3];
+    expect(
+      computeExecutionMayUpdateFigure(reference, projectId, languageId, otherSessionExecution),
+    ).toBe(false);
+  });
+
   it("orders revisions across session lifetimes before asynchronous application", () => {
     const base = {
       sessionCreatedAt: "2026-08-21T00:00:00.000Z",
       sessionId,
+      generation: INITIAL_COMPUTE_SESSION_GENERATION,
       submittedAt: "2026-08-21T00:01:00.000Z",
       executionId,
     };
@@ -230,6 +270,12 @@ describe("compute figure references", () => {
           sessionCreatedAt: "2026-08-21T01:00:00.000Z",
           sessionId: ComputeSessionId.make("session-2"),
         },
+        base,
+      ),
+    ).toBeGreaterThan(0);
+    expect(
+      compareComputeFigureRevisions(
+        { ...base, generation: ComputeSessionGeneration.make(2) },
         base,
       ),
     ).toBeGreaterThan(0);

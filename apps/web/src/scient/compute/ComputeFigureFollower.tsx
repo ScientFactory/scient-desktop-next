@@ -59,19 +59,103 @@ function ComputeRuntimeFigureCandidate(props: {
       },
     }),
   );
+  const outputData = outputs.data;
+  const refreshOutputs = outputs.refresh;
+  const candidate = props.candidate;
+  const onOutputs = props.onOutputs;
+  const session = props.session;
 
   useEffect(() => {
-    if (props.rehydrationToken !== null) outputs.refresh();
-  }, [props.rehydrationToken]);
+    if (props.rehydrationToken !== null) refreshOutputs();
+  }, [props.rehydrationToken, refreshOutputs]);
 
   useEffect(() => {
-    if (outputs.data === null) return;
-    for (const target of props.candidate.targets) {
-      props.onOutputs(target, props.session, props.candidate.execution, outputs.data.outputs);
+    if (outputData === null) return;
+    for (const target of candidate.targets) {
+      onOutputs(target, session, candidate.execution, outputData.outputs);
     }
-  }, [outputs.data, props.candidate, props.onOutputs, props.session]);
+  }, [candidate, onOutputs, outputData, session]);
 
   return null;
+}
+
+function ComputeRuntimeFigureSession(props: {
+  readonly cwd: string;
+  readonly environmentId: EnvironmentId;
+  readonly liveExecutions: ReadonlyArray<ComputeExecutionRecord>;
+  readonly rehydrationToken: string | null;
+  readonly sessionId: ComputeSessionRecord["sessionId"];
+  readonly targets: ReadonlyArray<FollowTarget>;
+  readonly onOutputs: (
+    target: FollowTarget,
+    session: ComputeSessionRecord,
+    execution: ComputeExecutionRecord,
+    outputs: ReadonlyArray<ComputeOutput>,
+  ) => void;
+}) {
+  const sessionQuery = useEnvironmentQuery(
+    computeEnvironment.session({
+      environmentId: props.environmentId,
+      input: {
+        cwd: props.cwd,
+        sessionId: props.sessionId,
+      },
+    }),
+  );
+  const session = sessionQuery.data;
+  const executions = useEnvironmentQuery(
+    computeEnvironment.executions({
+      environmentId: props.environmentId,
+      input: { cwd: props.cwd, sessionId: props.sessionId, limit: 100 },
+    }),
+  );
+  const executionData = executions.data;
+  const refreshExecutions = executions.refresh;
+  const sessionExecutions = useMemo(() => {
+    const byId = new Map<string, ComputeExecutionRecord>();
+    for (const execution of executionData ?? []) byId.set(execution.request.executionId, execution);
+    for (const execution of props.liveExecutions) {
+      byId.set(execution.request.executionId, execution);
+    }
+    return [...byId.values()];
+  }, [executionData, props.liveExecutions]);
+
+  useEffect(() => {
+    if (props.rehydrationToken !== null) refreshExecutions();
+  }, [props.rehydrationToken, refreshExecutions]);
+
+  const runtimeCandidateGroups = useMemo<ReadonlyArray<RuntimeCandidateGroup>>(() => {
+    if (session === null) return [];
+    const byExecutionId = new Map<string, RuntimeCandidateGroup>();
+    for (const target of props.targets) {
+      const execution = latestSuccessfulFigureExecution(
+        target.reference,
+        session,
+        sessionExecutions,
+      );
+      if (execution === null) continue;
+      const key = execution.request.executionId;
+      const current = byExecutionId.get(key);
+      byExecutionId.set(key, {
+        execution,
+        targets: current === undefined ? [target] : [...current.targets, target],
+      });
+    }
+    return [...byExecutionId.values()];
+  }, [props.targets, session, sessionExecutions]);
+
+  if (session === null) return null;
+  return runtimeCandidateGroups.map((candidate) => (
+    <ComputeRuntimeFigureCandidate
+      key={candidate.execution.request.executionId}
+      candidate={candidate}
+      cwd={props.cwd}
+      environmentId={props.environmentId}
+      rehydrationToken={props.rehydrationToken}
+      session={session}
+      onOutputs={props.onOutputs}
+    />
+  ));
 }
 
 /**
@@ -95,6 +179,7 @@ export function ComputeFigureFollower(props: {
     return [...bySurfaceId.values()];
   }, [props.artifacts]);
   const following = targets.length > 0;
+  const followingProjectFiles = targets.some((target) => target.reference._tag === "project-file");
   const appliedRevisionsRef = useRef(new Map<string, ComputeFigureRevision>());
 
   useEffect(() => {
@@ -105,7 +190,7 @@ export function ComputeFigureFollower(props: {
   }, [targets]);
 
   const sessions = useEnvironmentQuery(
-    following
+    followingProjectFiles
       ? computeEnvironment.sessions({
           environmentId: props.environmentId,
           input: { cwd: props.cwd },
@@ -121,13 +206,14 @@ export function ComputeFigureFollower(props: {
       : null,
   );
   const latestSession = useMemo(() => {
+    if (!followingProjectFiles) return null;
     const byId = new Map<string, ComputeSessionRecord>();
     for (const session of sessions.data ?? []) byId.set(session.sessionId, session);
     for (const session of events.data?.sessions.values() ?? []) {
       byId.set(session.sessionId, session);
     }
     return latestComputeFigureSession([...byId.values()]);
-  }, [events.data?.sessions, sessions.data]);
+  }, [events.data?.sessions, followingProjectFiles, sessions.data]);
   const executions = useEnvironmentQuery(
     latestSession === null
       ? null
@@ -136,6 +222,9 @@ export function ComputeFigureFollower(props: {
           input: { cwd: props.cwd, sessionId: latestSession.sessionId, limit: 100 },
         }),
   );
+  const refreshSessions = sessions.refresh;
+  const refreshLatestExecutions = executions.refresh;
+  const refreshEvents = events.refresh;
   const latestSessionExecutions = useMemo(() => {
     if (latestSession === null) return [];
     const byId = new Map<string, ComputeExecutionRecord>();
@@ -147,16 +236,32 @@ export function ComputeFigureFollower(props: {
     }
     return [...byId.values()];
   }, [events.data?.executions, executions.data, latestSession]);
+  const runtimeSessionTargets = useMemo(() => {
+    const bySessionId = new Map<ComputeSessionRecord["sessionId"], FollowTarget[]>();
+    for (const target of targets) {
+      if (target.reference._tag !== "runtime-display") {
+        continue;
+      }
+      const sessionTargets = bySessionId.get(target.reference.sessionId) ?? [];
+      sessionTargets.push(target);
+      bySessionId.set(target.reference.sessionId, sessionTargets);
+    }
+    return [...bySessionId.entries()].map(([sessionId, sessionTargets]) => ({
+      liveExecutions: [...(events.data?.executions.get(sessionId)?.values() ?? [])],
+      sessionId,
+      targets: sessionTargets,
+    }));
+  }, [events.data?.executions, targets]);
   const rehydrationToken = events.data?.observedGap
     ? `${events.data.observedGap.expected}:${events.data.observedGap.received}`
     : null;
 
   useEffect(() => {
     if (!events.data?.stale) return;
-    sessions.refresh();
-    executions.refresh();
-    events.refresh();
-  }, [events.data?.stale]);
+    refreshSessions();
+    refreshLatestExecutions();
+    refreshEvents();
+  }, [events.data?.stale, refreshEvents, refreshLatestExecutions, refreshSessions]);
 
   const applyCandidate = useCallback(
     (
@@ -181,27 +286,6 @@ export function ComputeFigureFollower(props: {
     [props.cwd, props.threadRef],
   );
 
-  const runtimeCandidateGroups = useMemo<ReadonlyArray<RuntimeCandidateGroup>>(() => {
-    if (latestSession === null) return [];
-    const byExecutionId = new Map<string, RuntimeCandidateGroup>();
-    for (const target of targets) {
-      if (target.reference._tag !== "runtime-display") continue;
-      const execution = latestSuccessfulFigureExecution(
-        target.reference,
-        latestSession,
-        latestSessionExecutions,
-      );
-      if (execution === null) continue;
-      const executionId = execution.request.executionId;
-      const current = byExecutionId.get(executionId);
-      byExecutionId.set(executionId, {
-        execution,
-        targets: current === undefined ? [target] : [...current.targets, target],
-      });
-    }
-    return [...byExecutionId.values()];
-  }, [latestSession, latestSessionExecutions, targets]);
-
   useEffect(() => {
     if (events.data?.stale || latestSession === null) return;
     for (const target of targets) {
@@ -215,15 +299,16 @@ export function ComputeFigureFollower(props: {
     }
   }, [applyCandidate, events.data?.stale, latestSession, latestSessionExecutions, targets]);
 
-  if (events.data?.stale || latestSession === null) return null;
-  return runtimeCandidateGroups.map((candidate) => (
-    <ComputeRuntimeFigureCandidate
-      key={candidate.execution.request.executionId}
-      candidate={candidate}
+  if (events.data?.stale) return null;
+  return runtimeSessionTargets.map(({ liveExecutions, sessionId, targets: sessionTargets }) => (
+    <ComputeRuntimeFigureSession
+      key={sessionId}
       cwd={props.cwd}
       environmentId={props.environmentId}
+      sessionId={sessionId}
+      liveExecutions={liveExecutions}
       rehydrationToken={rehydrationToken}
-      session={latestSession}
+      targets={sessionTargets}
       onOutputs={applyCandidate}
     />
   ));

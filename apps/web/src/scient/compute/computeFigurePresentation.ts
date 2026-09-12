@@ -12,6 +12,7 @@ import {
   computeFigureSurfaceId,
   type ComputeFigureReference,
 } from "./computeFigureReference";
+import type { ComputeFigureResource, ComputeStaticImageOutput } from "./computeResultPresentation";
 
 type ComputeImageOutput = Extract<ComputeOutput, { readonly _tag: "image" }>;
 type ComputeExecutionSource = ComputeExecutionRecord["request"]["source"];
@@ -22,6 +23,16 @@ export interface ComputeFigurePresentation {
   /** Snapshot or stable logical reference used by full and floating viewers. */
   readonly viewer: PreviewStaticImageSurfaceDescriptor;
   readonly reference: ComputeFigureReference;
+  readonly nativeDownload: ComputeFigureNativeDownload | null;
+}
+
+export interface ComputeFigureNativeDownload {
+  readonly resource: Extract<
+    PreviewStaticImageSurfaceDescriptor["resource"],
+    { readonly _tag: "compute-output" }
+  >;
+  readonly fileName: string;
+  readonly byteLength: ComputeFigureResource["byteLength"];
 }
 
 function figureNames(output: ComputeImageOutput, runtimeDisplayOrdinal: number) {
@@ -55,8 +66,12 @@ export function computeFigureDescriptorForRevision(input: {
   readonly session: Pick<ComputeSessionRecord, "projectId" | "sessionId">;
   readonly executionId: ComputeExecutionId | null;
   readonly output: ComputeImageOutput;
+  readonly displayOrdinal?: number;
 }): PreviewStaticImageSurfaceDescriptor {
-  const ordinal = input.reference._tag === "runtime-display" ? input.reference.ordinal : 1;
+  const ordinal =
+    input.reference._tag === "runtime-display"
+      ? (input.reference.ordinal ?? input.displayOrdinal ?? 1)
+      : 1;
   const names = figureNames(input.output, ordinal);
   const projectPath = input.reference._tag === "project-file" ? input.reference.path : null;
   const sourcePath =
@@ -88,10 +103,14 @@ export function computeFigureDescriptorForRevision(input: {
  */
 export function computeFigurePresentation(input: {
   readonly allowFollowing: boolean;
+  readonly executionGeneration?: ComputeSessionRecord["generation"];
   readonly cwd: string;
-  readonly session: Pick<ComputeSessionRecord, "projectId" | "sessionId" | "languageId" | "label">;
+  readonly session: Pick<
+    ComputeSessionRecord,
+    "projectId" | "sessionId" | "languageId" | "label" | "generation"
+  >;
   readonly executionId: ComputeExecutionId | null;
-  readonly output: ComputeImageOutput;
+  readonly output: ComputeStaticImageOutput;
   readonly displayOrdinal: number;
   readonly runtimeDisplayOrdinal: number;
   readonly source: ComputeExecutionSource | null;
@@ -103,6 +122,7 @@ export function computeFigurePresentation(input: {
     executionId: input.executionId,
     languageId: input.session.languageId,
     output: input.output,
+    generation: input.executionGeneration ?? input.session.generation,
     runtimeDisplayOrdinal: input.runtimeDisplayOrdinal,
     source: input.source,
   });
@@ -140,6 +160,18 @@ export function computeFigurePresentation(input: {
           session: input.session,
           executionId: input.executionId,
           output: input.output,
+          displayOrdinal: input.runtimeDisplayOrdinal,
         });
-  return { inline, viewer, reference };
+  const nativeDownload =
+    input.output.nativeFigure === undefined
+      ? null
+      : {
+          resource: {
+            ...computeOutputResource(input),
+            contentHash: input.output.nativeFigure.contentHash,
+          },
+          fileName: names.fileName.replace(/\.(png|svg)$/i, ".fig"),
+          byteLength: input.output.nativeFigure.byteLength,
+        };
+  return { inline, viewer, reference, nativeDownload };
 }

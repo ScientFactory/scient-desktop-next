@@ -1,4 +1,4 @@
-export interface PythonCodeSlice {
+export interface ComputeCodeSlice {
   readonly code: string;
   readonly range: {
     readonly startLine: number;
@@ -8,15 +8,19 @@ export interface PythonCodeSlice {
   };
 }
 
-export interface PythonTextRange {
+export interface ComputeTextRange {
   readonly start: { readonly line: number; readonly character: number };
   readonly end: { readonly line: number; readonly character: number };
 }
 
-export type PythonRunTarget =
-  | { readonly kind: "selection"; readonly label: "Run selection"; readonly slice: PythonCodeSlice }
-  | { readonly kind: "cell"; readonly label: "Run cell"; readonly slice: PythonCodeSlice }
-  | { readonly kind: "file"; readonly label: "Run file"; readonly slice: PythonCodeSlice | null };
+export type ComputeRunTarget =
+  | {
+      readonly kind: "selection";
+      readonly label: "Run selection";
+      readonly slice: ComputeCodeSlice;
+    }
+  | { readonly kind: "cell"; readonly label: "Run cell"; readonly slice: ComputeCodeSlice }
+  | { readonly kind: "file"; readonly label: "Run file"; readonly slice: ComputeCodeSlice | null };
 
 interface SourceLine {
   readonly start: number;
@@ -42,7 +46,7 @@ function sliceLines(
   lines: ReadonlyArray<SourceLine>,
   firstLine: number,
   lastLine: number,
-): PythonCodeSlice | null {
+): ComputeCodeSlice | null {
   if (lines.length === 0) return null;
   const startIndex = Math.max(0, Math.min(lines.length - 1, firstLine));
   const endIndex = Math.max(startIndex, Math.min(lines.length - 1, lastLine));
@@ -62,15 +66,18 @@ function sliceLines(
   };
 }
 
-function comparePosition(left: PythonTextRange["start"], right: PythonTextRange["start"]): number {
+function comparePosition(
+  left: ComputeTextRange["start"],
+  right: ComputeTextRange["start"],
+): number {
   return left.line === right.line ? left.character - right.character : left.line - right.line;
 }
 
 /** Selects exact UTF-16 editor bytes, preserving partial-line selections. */
-export function pythonTextSelection(
+export function computeTextSelection(
   contents: string,
-  selection: PythonTextRange,
-): PythonCodeSlice | null {
+  selection: ComputeTextRange,
+): ComputeCodeSlice | null {
   const lines = sourceLines(contents);
   const [start, end] =
     comparePosition(selection.start, selection.end) <= 0
@@ -103,10 +110,10 @@ export function pythonTextSelection(
 }
 
 /** Selects exact editor bytes for a one-based inclusive line selection. */
-export function pythonSelection(
+export function computeLineSelection(
   contents: string,
   selection: { readonly start: number; readonly end: number },
-): PythonCodeSlice | null {
+): ComputeCodeSlice | null {
   const lines = sourceLines(contents);
   const first = Math.min(selection.start, selection.end) - 1;
   const last = Math.max(selection.start, selection.end) - 1;
@@ -117,11 +124,14 @@ export function pythonSelection(
  * Resolves the `# %%` cell containing a one-based editor line. Marker lines
  * delimit cells and are never submitted to the runtime.
  */
-export function pythonCell(contents: string, line: number): PythonCodeSlice | null {
+export function computeCell(
+  contents: string,
+  line: number,
+  marker = /^\s*#\s*%%(?:\s|$)/,
+): ComputeCodeSlice | null {
   const lines = sourceLines(contents);
   if (lines.length === 0) return null;
   const anchor = Math.max(0, Math.min(lines.length - 1, line - 1));
-  const marker = /^\s*#\s*%%(?:\s|$)/;
   let markerLine: number | null = null;
   let last = lines.length - 1;
   for (let index = anchor; index >= 0; index -= 1) {
@@ -140,15 +150,16 @@ export function pythonCell(contents: string, line: number): PythonCodeSlice | nu
 }
 
 /** The explicit cell implied by a caret, never by a non-collapsed text selection. */
-export function pythonActiveCell(
+export function computeActiveCell(
   contents: string,
-  selection: PythonTextRange | null,
-): PythonCodeSlice | null {
+  selection: ComputeTextRange | null,
+  marker?: RegExp,
+): ComputeCodeSlice | null {
   if (selection === null || comparePosition(selection.start, selection.end) !== 0) return null;
-  return pythonCell(contents, selection.end.line + 1);
+  return computeCell(contents, selection.end.line + 1, marker);
 }
 
-export function pythonFile(contents: string): PythonCodeSlice | null {
+export function computeFile(contents: string): ComputeCodeSlice | null {
   const lines = sourceLines(contents);
   return sliceLines(contents, lines, 0, lines.length - 1);
 }
@@ -159,21 +170,23 @@ export function pythonFile(contents: string): PythonCodeSlice | null {
  * the unambiguous fallback. A line-range selection remains supported for the
  * editor's existing gutter selection interaction.
  */
-export function resolvePythonRunTarget(
+export function resolveComputeRunTarget(
   contents: string,
   lineSelection: { readonly start: number; readonly end: number } | null,
-  editorSelection: PythonTextRange | null,
-): PythonRunTarget {
+  editorSelection: ComputeTextRange | null,
+  marker?: RegExp,
+): ComputeRunTarget {
   const exactSelection =
-    editorSelection === null ? null : pythonTextSelection(contents, editorSelection);
-  const selectedLines = lineSelection === null ? null : pythonSelection(contents, lineSelection);
+    editorSelection === null ? null : computeTextSelection(contents, editorSelection);
+  const selectedLines =
+    lineSelection === null ? null : computeLineSelection(contents, lineSelection);
   const selection = exactSelection ?? selectedLines;
   if (selection !== null) {
     return { kind: "selection", label: "Run selection", slice: selection };
   }
 
-  const cell = pythonActiveCell(contents, editorSelection);
+  const cell = computeActiveCell(contents, editorSelection, marker);
   if (cell !== null) return { kind: "cell", label: "Run cell", slice: cell };
 
-  return { kind: "file", label: "Run file", slice: pythonFile(contents) };
+  return { kind: "file", label: "Run file", slice: computeFile(contents) };
 }

@@ -83,6 +83,30 @@ function fold(events: ReadonlyArray<ComputeSessionStreamEvent>) {
 }
 
 describe("compute live projection", () => {
+  it("accepts an empty project's first zero-based delta", () => {
+    const state = applyComputeSessionStreamEvent(EMPTY_COMPUTE_SUBSCRIPTION_STATE, {
+      _tag: "session-updated",
+      eventSequence: 0,
+      session: session("session-1"),
+    });
+    expect(state.stale).toBe(false);
+    expect(state.expectedLiveSequence).toBe(1);
+    expect(state.sessions.get("session-1")?.status).toBe("ready");
+  });
+
+  it("detects dropped initial deltas even when there was no session snapshot", () => {
+    const state = applyComputeSessionStreamEvent(EMPTY_COMPUTE_SUBSCRIPTION_STATE, {
+      _tag: "execution-updated",
+      eventSequence: 3,
+      projectId: PROJECT,
+      sessionId: ComputeSessionId.make("session-1"),
+      execution: execution("execution-1"),
+    });
+    expect(state.stale).toBe(true);
+    expect(state.observedGap).toEqual({ expected: 0, received: 3 });
+    expect(state.executions.size).toBe(0);
+  });
+
   it("accepts a multi-session snapshot boundary and ignores duplicate deltas", () => {
     const snapshotA: ComputeSessionStreamEvent = {
       _tag: "session-snapshot",
@@ -106,6 +130,22 @@ describe("compute live projection", () => {
 
     const duplicate = applyComputeSessionStreamEvent(afterLive, live);
     expect(duplicate).toBe(afterLive);
+  });
+
+  it("can resynchronize from an older server's nonzero stamped snapshot", () => {
+    const legacyFirstDelta: ComputeSessionStreamEvent = {
+      _tag: "session-updated",
+      eventSequence: 7,
+      session: session("session-1"),
+    };
+    expect(fold([legacyFirstDelta]).stale).toBe(true);
+    const resubscribed = fold([
+      { _tag: "session-snapshot", eventSequence: 7, session: session("session-1") },
+      legacyFirstDelta,
+    ]);
+    expect(resubscribed.stale).toBe(false);
+    expect(resubscribed.expectedLiveSequence).toBe(8);
+    expect(resubscribed.sessions.size).toBe(1);
   });
 
   it("freezes deltas after a gap until a new subscription snapshot replaces it", () => {

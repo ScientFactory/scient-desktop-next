@@ -181,8 +181,31 @@ export const StartKernelPayload = Schema.Struct({
 });
 export type StartKernelPayload = typeof StartKernelPayload.Type;
 
+const SourceContextPath = Schema.NonEmptyString.check(Schema.isMaxLength(MaxPathLength));
+const SourceContextLine = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
+
+/**
+ * Source facts are metadata, not a second copy of user code.  The bridge uses
+ * them for native filename context and saved-file identity checks only. For a
+ * dirty file, cell, or selection, sourceBytesHash is the submitted-code hash;
+ * only saved files may be dispatched from disk.
+ */
+export const ExecuteSourceContext = Schema.Struct({
+  kind: Schema.Literals(["file", "cell", "selection"]),
+  filePath: Schema.optional(SourceContextPath),
+  fileName: Schema.optional(Label),
+  sourceBytesHash: Schema.optional(Schema.NonEmptyString.check(Schema.isMaxLength(256))),
+  sourceRevision: Schema.optional(Label),
+  saved: Schema.optional(Schema.Boolean),
+  startLine: Schema.optional(SourceContextLine),
+  startColumn: Schema.optional(SourceContextLine),
+  endLine: Schema.optional(SourceContextLine),
+  endColumn: Schema.optional(SourceContextLine),
+});
+export type ExecuteSourceContext = typeof ExecuteSourceContext.Type;
+
 export const KernelReadyPayload = Schema.Struct({
-  kernelPid: Schema.Int.check(Schema.isGreaterThan(0)),
+  kernelPid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
   languageId: ComputeLanguageId,
   languageVersion: Label,
   protocolVersion: Schema.Int.check(Schema.isGreaterThanOrEqualTo(1)),
@@ -194,6 +217,7 @@ export const ExecutePayload = Schema.Struct({
   code: Schema.String.check(Schema.isMaxLength(MaxCodeLength), utf8Bound(MaxCodeLength)),
   silent: Schema.Boolean,
   storeHistory: Schema.Boolean,
+  sourceContext: Schema.optional(ExecuteSourceContext),
 });
 export type ExecutePayload = typeof ExecutePayload.Type;
 
@@ -347,7 +371,7 @@ export type RestartPayload = typeof RestartPayload.Type;
  * the session is actually at.
  */
 export const RestartedPayload = Schema.Struct({
-  kernelPid: Schema.Int.check(Schema.isGreaterThan(0)),
+  kernelPid: Schema.NullOr(Schema.Int.check(Schema.isGreaterThan(0))),
 });
 export type RestartedPayload = typeof RestartedPayload.Type;
 

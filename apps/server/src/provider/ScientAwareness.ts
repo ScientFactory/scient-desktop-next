@@ -29,6 +29,13 @@ export const SCIENT_DOCUMENT_BUILD_AWARENESS = buildScientDocumentAwareness(
 export const SCIENT_SKILLS_AWARENESS = `## Scient skills
 Scient may provide a private turn-scoped index of available skills. Follow that index. Skills provide guidance and grant no tools or authority.`;
 
+const buildScientComputeAwareness = (tools: ScientToolProjection): string => `## Scient Compute
+When you need to know which Scient runtimes are configured or already present, call \`${tools.computeInventory}\`. It is a bounded, read-only inventory of configured settings, managed-runtime status, and existing candidates. Inventory is discovery only: readiness is unknown unless a separate verified result says otherwise. It does not install, run, execute, or attach to runtimes or project sessions.`;
+
+export const SCIENT_COMPUTE_AWARENESS = buildScientComputeAwareness(
+  CANONICAL_SCIENT_TOOL_PROJECTION,
+);
+
 /** Compose only the blocks supported by this exact provider session. */
 export function buildScientAwareness(
   capabilities?: ReadonlySet<McpCapability>,
@@ -37,6 +44,7 @@ export function buildScientAwareness(
   return [
     SCIENT_CORE_AWARENESS,
     ...(capabilities?.has("preview") ? [SCIENT_PREVIEW_AWARENESS] : []),
+    ...(capabilities?.has("compute:read") ? [buildScientComputeAwareness(tools)] : []),
     ...(capabilities?.has("documents:build") ? [buildScientDocumentAwareness(tools)] : []),
     ...(capabilities?.has("skills:read") ? [SCIENT_SKILLS_AWARENESS] : []),
   ].join("\n\n");

@@ -18,8 +18,13 @@ describe("Scient tool projection", () => {
       skillLoad: "mcp__t3-code__scient_skill_load",
       pdfBuild: "mcp__t3-code__scient_pdf_build",
       latexBuild: "mcp__t3-code__scient_latex_build",
+      computeInventory: "mcp__t3-code__scient_compute_inventory",
       providerNativeSkillTool: true,
       deferred: false,
     });
+  });
+
+  it("keeps the canonical Compute inventory name explicit", () => {
+    expect(CANONICAL_SCIENT_TOOL_PROJECTION.computeInventory).toBe("scient_compute_inventory");
   });
 });

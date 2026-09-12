@@ -7,7 +7,9 @@ import {
   confirmProjectFileQueryData,
   getOptimisticProjectFileQueryData,
   resolveProjectFileQueryData,
+  refreshProjectFiles,
   setProjectFileQueryData,
+  subscribeProjectFilesRefresh,
 } from "./projectFilesQueryState";
 
 const environmentId = EnvironmentId.make("environment-project-files-query-test");
@@ -16,6 +18,33 @@ describe("project files queries", () => {
   afterEach(() => {
     clearProjectFileQueryData(environmentId, "/repo", "convex.json");
     vi.unstubAllGlobals();
+  });
+
+  it("refreshes only mounted consumers of the changed workspace and unsubscribes cleanly", () => {
+    const changed = vi.fn();
+    const otherProject = vi.fn();
+    const otherEnvironment = vi.fn();
+    const unsubscribe = subscribeProjectFilesRefresh(environmentId, "/refresh-qa", changed);
+    const unsubscribeProject = subscribeProjectFilesRefresh(environmentId, "/other", otherProject);
+    const unsubscribeEnvironment = subscribeProjectFilesRefresh(
+      EnvironmentId.make("other-environment"),
+      "/refresh-qa",
+      otherEnvironment,
+    );
+    try {
+      expect(changed).not.toHaveBeenCalled();
+      refreshProjectFiles(environmentId, "/refresh-qa");
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(otherProject).not.toHaveBeenCalled();
+      expect(otherEnvironment).not.toHaveBeenCalled();
+      unsubscribe();
+      refreshProjectFiles(environmentId, "/refresh-qa");
+      expect(changed).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+      unsubscribeProject();
+      unsubscribeEnvironment();
+    }
   });
 
   it("keeps the latest optimistic draft when an older write finishes", () => {

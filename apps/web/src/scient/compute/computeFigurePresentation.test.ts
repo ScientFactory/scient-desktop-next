@@ -214,6 +214,7 @@ describe("compute figure presentation", () => {
     expect(parseComputeFigureSurfaceId(second.surfaceId)).toEqual({
       _tag: "runtime-display",
       projectId: session.projectId,
+      sessionId: session.sessionId,
       languageId: session.languageId,
       path: "analysis.py",
       ordinal: 2,

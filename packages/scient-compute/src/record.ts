@@ -259,7 +259,9 @@ export type ComputeOutputResourceRef = typeof ComputeOutputResourceRef.Type;
 /**
  * What a subscriber is told, in one ordered stream.
  *
- * `eventSequence` is the ordering and recovery cursor minted by the service.
+ * `eventSequence` is a subscription-local ordering and recovery cursor: initial
+ * snapshots and the first live delta are zero. It is not a durable identity or
+ * a cursor shared by different subscribers or workspace owners.
  * A subscriber discards events covered by its snapshot; if it observes a gap,
  * it re-reads the durable list/output APIs before applying later deltas. The
  * stream is a fast notification path, never the authority for a transcript.

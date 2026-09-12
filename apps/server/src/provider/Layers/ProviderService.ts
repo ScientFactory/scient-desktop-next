@@ -952,6 +952,7 @@ const makeProviderService = Effect.fn("makeProviderService")(function* (
       const capabilities = new Set<McpCapability>([
         "pull-requests",
         "documents:build",
+        "compute:read",
         "sources:read",
         "sources:write",
         ...(browserAccessEnabled ? (["preview"] satisfies ReadonlyArray<McpCapability>) : []),

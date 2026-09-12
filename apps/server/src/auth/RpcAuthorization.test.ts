@@ -50,6 +50,7 @@ describe("RPC authorization scopes", () => {
   it("keeps compute inspection and history read-only while lifecycle changes require operate", () => {
     for (const method of [
       WS_METHODS.computeInspectRuntimes,
+      WS_METHODS.computeRuntimeInventory,
       WS_METHODS.computeListSessions,
       WS_METHODS.computeGetSession,
       WS_METHODS.computeListExecutions,

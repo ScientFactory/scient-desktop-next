@@ -18,6 +18,8 @@ import { useProjectFilePickerQuery } from "./projectFilesQueryState";
 
 interface ProjectFilePickerProps {
   readonly setOpen: (open: boolean) => void;
+  readonly onSelectFile?: (relativePath: string) => void;
+  readonly actionLabel?: string;
 }
 
 function HighlightedFuzzyText(props: {
@@ -68,7 +70,9 @@ function EmptyProjectFilePicker() {
   );
 }
 
-function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveProjectTarget }) {
+export function ProjectFilePickerForTarget(
+  props: ProjectFilePickerProps & { target: ActiveProjectTarget },
+) {
   const { target } = props;
   const [query, setQuery] = useState("");
   const [highlightedItemValue, setHighlightedItemValue] = useState<string | null>(null);
@@ -107,10 +111,11 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
         ),
         icon: <PierreEntryIcon pathValue={match.path} kind="file" theme={resolvedTheme} />,
         run: async () => {
-          useRightPanelStore.getState().openFile(target.threadRef, match.path);
+          if (props.onSelectFile) props.onSelectFile(match.path);
+          else useRightPanelStore.getState().openFile(target.threadRef, match.path);
         },
       })),
-    [hasMatchedQuery, matches, resolvedTheme, target.threadRef],
+    [hasMatchedQuery, matches, resolvedTheme, target.threadRef, props.onSelectFile],
   );
 
   const emptyStateMessage = getEmptyStateMessage(query, result.error, result.isPending);
@@ -120,7 +125,7 @@ function OpenProjectFilePicker(props: ProjectFilePickerProps & { target: ActiveP
       aria-label="File picker"
       autoHighlight="always"
       escapeLabel="Back"
-      footerActionLabel="Open file"
+      footerActionLabel={props.actionLabel ?? "Open file"}
       inputProps={{ placeholder: "Search files…" }}
       mode="none"
       onItemHighlighted={(value) => {
@@ -159,5 +164,5 @@ export function ProjectFilePicker(props: ProjectFilePickerProps) {
     return <EmptyProjectFilePicker />;
   }
 
-  return <OpenProjectFilePicker setOpen={props.setOpen} target={target} />;
+  return <ProjectFilePickerForTarget {...props} target={target} />;
 }

@@ -2,6 +2,7 @@ import { expect, it } from "@effect/vitest";
 import { Tool } from "effect/unstable/ai";
 
 import { ScientDocumentsToolkit } from "./toolkits/documents/tools.ts";
+import { ScientComputeToolkit } from "./toolkits/compute/tools.ts";
 import { PreviewToolkit } from "./toolkits/preview/tools.ts";
 import { ScientSkillsToolkit } from "./toolkits/skills/tools.ts";
 import { ScientSourcesToolkit } from "./toolkits/sources/tools.ts";
@@ -11,6 +12,7 @@ const tools: ReadonlyArray<Tool.Any> = [
   ...Object.values(ScientSourcesToolkit.tools),
   ...Object.values(ScientSkillsToolkit.tools),
   ...Object.values(ScientDocumentsToolkit.tools),
+  ...Object.values(ScientComputeToolkit.tools),
 ];
 
 it("publishes a provider-compatible MCP tool catalog", () => {

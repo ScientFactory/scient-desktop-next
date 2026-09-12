@@ -8,6 +8,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import {
+  ComputeLanguageId,
   ComputeSessionId,
   TERMINAL_COMPUTE_EXECUTION_STATUSES,
   TERMINAL_COMPUTE_SESSION_STATUSES,
@@ -20,6 +21,7 @@ import {
   ChevronDown,
   ChevronRight,
   CircleAlert,
+  History,
   LoaderCircle,
   MoreHorizontal,
   Play,
@@ -33,15 +35,7 @@ import { Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "~/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogClose,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogPopup,
-  AlertDialogTitle,
-} from "~/components/ui/alert-dialog";
+import { Popover, PopoverDescription, PopoverPopup, PopoverTitle } from "~/components/ui/popover";
 import {
   Menu,
   MenuItem,
@@ -52,16 +46,38 @@ import {
   MenuTrigger,
 } from "~/components/ui/menu";
 import { ScrollArea } from "~/components/ui/scroll-area";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { cn, randomUUID } from "~/lib/utils";
-import { appAtomRegistry } from "~/rpc/atomRegistry";
 import { computeEnvironment } from "~/state/compute";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useEnvironmentQuery } from "~/state/query";
+import { useEnvironmentSettings } from "~/hooks/useSettings";
+import { serverEnvironment } from "~/state/server";
 import { useRightPanelStore } from "~/rightPanelStore";
-import { getProjectEntriesQueryAtom } from "~/components/files/projectFilesQueryState";
+import { scientComputeSurface } from "~/scient/rightPanel/surfaces";
+import { refreshProjectFiles } from "~/components/files/projectFilesQueryState";
 
 import { ComputeOutputView } from "./ComputeOutputView";
+import { ComputeSavedFileAction } from "./ComputeSavedFileAction";
+import { ManagedRuntimeCard } from "./ScientificComputingSettings";
+import { defaultComputeRuntime, isComputeCapacityReachedError } from "./computeFileSurfaceModel";
+import { closeComputeContext, mergeComputeSessionRecords } from "./computeContextCoordinator";
+import {
+  computeSessionOwnerLabel,
+  ensureComputeContext,
+  getComputeContext,
+  INITIAL_COMPUTE_CONTEXT_GENERATION,
+  useComputeContextStore,
+  type ComputeContextId,
+} from "./computeContextStore";
 import {
   computeExecutionStatusLabel,
   computeSourceFreshnessLabel,
@@ -76,6 +92,8 @@ interface ReadyRuntime {
   readonly candidate: ComputeLanguageRuntimeInspection["runtimes"][number];
   readonly key: string;
 }
+
+const PYTHON_LANGUAGE_ID = ComputeLanguageId.make("python");
 
 function statusLabel(status: string): string {
   return status.replaceAll("-", " ");
@@ -243,6 +261,7 @@ function ComputeExecutionCard(props: {
             environmentId={props.environmentId}
             session={props.session}
             executionId={props.execution.request.executionId}
+            executionGeneration={props.execution.request.generation}
             outputs={outputs}
             emptyLabel={
               props.execution.result?.status === "succeeded"
@@ -292,6 +311,7 @@ function ComputeExecutionCard(props: {
                 environmentId={props.environmentId}
                 session={props.session}
                 executionId={props.figureFallback.execution.request.executionId}
+                executionGeneration={props.figureFallback.execution.request.generation}
                 outputs={fallbackOutputs}
                 emptyLabel="Previous figures are unavailable."
                 threadRef={props.threadRef}
@@ -419,7 +439,7 @@ function ComputeVariablesView(props: {
   if (!props.hasLiveSession) {
     return (
       <div className="flex min-h-40 items-center justify-center p-6 text-center text-xs text-muted-foreground">
-        Run a Python file to start a live session and inspect its variables.
+        Run a source file to start a live session and inspect its variables.
       </div>
     );
   }
@@ -522,10 +542,15 @@ export function ComputePanel(props: {
   readonly cwd: string;
   readonly threadRef: ScopedThreadRef;
   readonly sourcePath?: string;
+  readonly sourceLanguageId?: string;
   readonly sourceRevision?: string;
   readonly sourcePending?: boolean;
+  readonly focusSessionId?: string | null;
   readonly focusExecutionId?: string | null;
   readonly onFocusConsumed?: (executionId: string) => void;
+  readonly contextId?: ComputeContextId;
+  readonly onRetryClose?: () => void;
+  readonly onRunSource?: () => void;
   readonly embedded?: boolean;
 }) {
   const [panelView, setPanelView] = useState<"results" | "variables">("results");
@@ -535,13 +560,35 @@ export function ComputePanel(props: {
   const [operation, setOperation] = useState<
     "start" | "cancel" | "interrupt" | "restart" | "stop" | null
   >(null);
-  const [sessionConfirmation, setSessionConfirmation] = useState<"restart" | "stop" | null>(null);
+  const [sessionConfirmation, setSessionConfirmation] = useState<{
+    readonly kind: "restart" | "stop";
+    readonly session: ComputeSessionRecord;
+    readonly anchorRect: {
+      readonly x: number;
+      readonly y: number;
+      readonly width: number;
+      readonly height: number;
+    };
+  } | null>(null);
+  const [capacityBlocked, setCapacityBlocked] = useState(false);
+  const [stoppingUnusedSession, setStoppingUnusedSession] = useState<ComputeSessionId | null>(null);
+  const [startRetryAvailable, setStartRetryAvailable] = useState(false);
   const [variableSnapshot, setVariableSnapshot] = useState<ComputeVariableSnapshot | null>(null);
   const [variableError, setVariableError] = useState<string | null>(null);
   const [variablesLoading, setVariablesLoading] = useState(false);
+  const contextBinding = useComputeContextStore((state) =>
+    props.contextId === undefined ? null : (state.bindings[props.contextId] ?? null),
+  );
   const observedTerminalExecutionsRef = useRef<Set<string> | null>(null);
   const newestExecutionRef = useRef<string | null>(null);
   const variableRequestRef = useRef(0);
+  const scientificComputing = useEnvironmentSettings(
+    props.environmentId,
+    (settings) => settings.scientificComputing,
+  );
+  const updateEnvironmentSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    reportFailure: false,
+  });
 
   const runtimes = useEnvironmentQuery(
     computeEnvironment.runtimes({
@@ -561,7 +608,22 @@ export function ComputePanel(props: {
       input: { cwd: props.cwd },
     }),
   );
+  const exactSessionQuery =
+    props.contextId !== undefined &&
+    contextBinding?.sessionId !== null &&
+    contextBinding?.sessionId !== undefined &&
+    typeof computeEnvironment.session === "function"
+      ? computeEnvironment.session({
+          environmentId: props.environmentId,
+          input: { cwd: props.cwd, sessionId: contextBinding.sessionId },
+        })
+      : null;
+  const exactSession = useEnvironmentQuery(exactSessionQuery);
   const startSession = useAtomCommand(computeEnvironment.startSession, { reportFailure: false });
+  const getSession = useAtomQueryRunner(computeEnvironment.session, {
+    reportFailure: false,
+    refresh: true,
+  });
   const cancelExecution = useAtomCommand(computeEnvironment.cancelExecution, {
     reportFailure: false,
   });
@@ -580,7 +642,10 @@ export function ComputePanel(props: {
     () =>
       (runtimes.data?.languages ?? []).flatMap((language) =>
         language.runtimes.flatMap((candidate) =>
-          language.enabled && candidate.verification.readiness === "ready"
+          language.enabled &&
+          candidate.verification.readiness === "ready" &&
+          (props.sourceLanguageId === undefined ||
+            language.descriptor.languageId === props.sourceLanguageId)
             ? [
                 {
                   language,
@@ -591,29 +656,94 @@ export function ComputePanel(props: {
             : [],
         ),
       ),
-    [runtimes.data],
+    [runtimes.data, props.sourceLanguageId],
+  );
+  const defaultRuntime = defaultComputeRuntime(
+    (runtimes.data?.languages ?? []).filter(
+      (language) =>
+        props.sourceLanguageId === undefined ||
+        language.descriptor.languageId === props.sourceLanguageId,
+    ),
   );
   const selectedRuntime =
-    readyRuntimes.find((runtime) => runtime.key === runtimeKey) ?? readyRuntimes[0] ?? null;
+    runtimeKey === ""
+      ? (readyRuntimes.find((runtime) => runtime.candidate === defaultRuntime) ?? null)
+      : (readyRuntimes.find((runtime) => runtime.key === runtimeKey) ?? null);
+  const pythonLanguage =
+    runtimes.data?.languages.find((language) => language.descriptor.languageId === "python") ??
+    null;
+  const pythonPreference = scientificComputing.languages[PYTHON_LANGUAGE_ID] ?? {
+    enabled: false,
+    executable: "",
+  };
+  const ensurePythonEnabled = useCallback(async () => {
+    if (pythonPreference.enabled) return true;
+    const result = await updateEnvironmentSettings({
+      environmentId: props.environmentId,
+      input: {
+        patch: {
+          scientificComputing: {
+            schemaVersion: 1,
+            languages: {
+              [PYTHON_LANGUAGE_ID]: { ...pythonPreference, enabled: true },
+            },
+          },
+        },
+      },
+    });
+    return result._tag === "Success";
+  }, [props.environmentId, pythonPreference, updateEnvironmentSettings]);
 
   const allSessions = useMemo(() => {
-    const byId = new Map<string, ComputeSessionRecord>();
-    for (const session of sessions.data ?? []) byId.set(session.sessionId, session);
-    for (const session of events.data?.sessions.values() ?? []) {
-      byId.set(session.sessionId, session);
-    }
-    return [...byId.values()].toSorted(
+    return mergeComputeSessionRecords(
+      sessions.data ?? [],
+      exactSession.data === null ? [] : [exactSession.data],
+      events.data?.sessions.values() ?? [],
+    ).toSorted(
       (left, right) =>
         right.createdAt.localeCompare(left.createdAt) ||
         right.sessionId.localeCompare(left.sessionId),
     );
-  }, [events.data?.sessions, sessions.data]);
+  }, [events.data?.sessions, exactSession.data, sessions.data]);
+  const ownedSession = allSessions.find(
+    (session) => session.sessionId === contextBinding?.sessionId,
+  );
+  useEffect(() => {
+    if (props.contextId !== undefined && ownedSession !== undefined) {
+      useComputeContextStore.getState().observeSession(props.contextId, ownedSession);
+    }
+  }, [props.contextId, ownedSession]);
+  const canRetryStart =
+    startRetryAvailable || (contextBinding?.lifecycle === "starting" && operation === null);
+  const contextSessions = useMemo(() => {
+    if (props.contextId === undefined) return allSessions;
+    if (contextBinding?.sessionId === null || contextBinding?.sessionId === undefined) return [];
+    return allSessions.filter((session) => session.sessionId === contextBinding.sessionId);
+  }, [allSessions, contextBinding, props.contextId]);
+  const capacitySessions = useMemo(
+    () =>
+      allSessions.filter(
+        (session) =>
+          !TERMINAL_COMPUTE_SESSION_STATUSES.has(session.status) &&
+          session.sessionId !== contextBinding?.sessionId,
+      ),
+    [allSessions, contextBinding?.sessionId],
+  );
+  const selectedOverviewSession =
+    props.contextId === undefined
+      ? allSessions.find((session) => session.sessionId === selectedSessionId)
+      : undefined;
   const liveSession =
-    allSessions.find((session) => !TERMINAL_COMPUTE_SESSION_STATUSES.has(session.status)) ?? null;
+    selectedOverviewSession !== undefined &&
+    !TERMINAL_COMPUTE_SESSION_STATUSES.has(selectedOverviewSession.status)
+      ? selectedOverviewSession
+      : (contextSessions.find(
+          (session) => !TERMINAL_COMPUTE_SESSION_STATUSES.has(session.status),
+        ) ?? null);
   const selectedSession =
-    allSessions.find((session) => session.sessionId === selectedSessionId) ??
+    contextSessions.find((session) => session.sessionId === selectedSessionId) ??
     liveSession ??
-    allSessions[0] ??
+    contextSessions[0] ??
     null;
   const selectedIsLive =
     liveSession !== null && selectedSession?.sessionId === liveSession.sessionId;
@@ -671,7 +801,7 @@ export function ComputePanel(props: {
     selectedLiveOutputState?.hasImage ?? false,
   );
   const selectedIsCurrentResult =
-    selectedSession?.sessionId === allSessions[0]?.sessionId &&
+    selectedSession?.sessionId === contextSessions[0]?.sessionId &&
     selectedExecution?.request.executionId === selectedExecutions[0]?.request.executionId;
   const fallbackLiveOutputState =
     selectedSession === null || figureFallback === null
@@ -746,8 +876,9 @@ export function ComputePanel(props: {
   }, [selectedSession, selectedSessionId]);
 
   useEffect(() => {
+    if (props.focusSessionId) setSelectedSessionId(props.focusSessionId);
     if (props.focusExecutionId) setSelectedExecutionId(props.focusExecutionId);
-  }, [props.focusExecutionId]);
+  }, [props.focusExecutionId, props.focusSessionId]);
 
   useEffect(() => {
     variableRequestRef.current += 1;
@@ -790,47 +921,234 @@ export function ComputePanel(props: {
     if (observed === null || [...terminalIds].every((id) => observed.has(id))) return;
     sessions.refresh();
     executions.refresh();
-    appAtomRegistry.refresh(getProjectEntriesQueryAtom(props.environmentId, props.cwd));
+    refreshProjectFiles(props.environmentId, props.cwd);
     // Refresh ordinary workspace state once after a newly terminal execution.
   }, [props.cwd, props.environmentId, selectedExecutions]);
 
+  const stopUnusedSession = useCallback(
+    async (session: ComputeSessionRecord) => {
+      if (stoppingUnusedSession !== null) return;
+      setStoppingUnusedSession(session.sessionId);
+      let result: Awaited<ReturnType<typeof stopSession>>;
+      try {
+        result = await stopSession({
+          environmentId: props.environmentId,
+          input: {
+            cwd: props.cwd,
+            sessionId: session.sessionId,
+            expectedGeneration: session.generation,
+          },
+        });
+      } catch (error) {
+        setStoppingUnusedSession(null);
+        toastManager.add({
+          type: "error",
+          title: `Unable to stop ${session.label}`,
+          description: error instanceof Error ? error.message : "The stop request failed.",
+        });
+        return;
+      }
+      setStoppingUnusedSession(null);
+      if (result._tag === "Success") {
+        for (const binding of Object.values(useComputeContextStore.getState().bindings)) {
+          if (
+            binding.environmentId === props.environmentId &&
+            binding.cwd === props.cwd &&
+            binding.sessionId === session.sessionId &&
+            binding.generation === session.generation
+          ) {
+            useComputeContextStore.getState().markSessionTerminal({
+              contextId: binding.contextId,
+              sessionId: result.value.sessionId,
+              generation: result.value.generation,
+            });
+          }
+        }
+        sessions.refresh();
+        events.refresh();
+        return;
+      }
+      if (!isAtomCommandInterrupted(result)) {
+        operationFailure(`Unable to stop ${session.label}`, result);
+      }
+    },
+    [events, props.cwd, props.environmentId, sessions, stopSession, stoppingUnusedSession],
+  );
+
+  const confirmFailedStart = useCallback(
+    async (sessionId: ComputeSessionId, generation: ComputeSessionRecord["generation"]) => {
+      if (props.contextId === undefined) return;
+      try {
+        const observed = await getSession({
+          environmentId: props.environmentId,
+          input: { cwd: props.cwd, sessionId },
+        });
+        if (
+          observed._tag !== "Success" ||
+          observed.value === null ||
+          observed.value.sessionId !== sessionId ||
+          observed.value.generation !== generation ||
+          !TERMINAL_COMPUTE_SESSION_STATUSES.has(observed.value.status)
+        ) {
+          return;
+        }
+        useComputeContextStore.getState().markSessionTerminal({
+          contextId: props.contextId,
+          sessionId,
+          generation,
+        });
+      } catch {
+        // A rejected read is not proof that the independent server startup stopped.
+      }
+    },
+    [getSession, props.contextId, props.cwd, props.environmentId],
+  );
+
   const handleStart = async () => {
     if (selectedRuntime === null) return;
+    const context =
+      props.contextId === undefined
+        ? null
+        : (getComputeContext(props.contextId) ??
+          ensureComputeContext({
+            contextId: props.contextId,
+            environmentId: props.environmentId,
+            cwd: props.cwd,
+            ownerKey: `${props.environmentId}:${props.cwd}:${props.contextId}`,
+          }));
+    if (
+      (context?.lifecycle === "starting" && !capacityBlocked && !canRetryStart) ||
+      context?.lifecycle === "live" ||
+      context?.lifecycle === "closing" ||
+      context?.lifecycle === "close-failed"
+    ) {
+      return;
+    }
+    const sessionId =
+      context?.lifecycle === "terminal" || context?.sessionId === null
+        ? ComputeSessionId.make(randomUUID())
+        : (context?.sessionId ?? ComputeSessionId.make(randomUUID()));
+    const requestedGeneration =
+      context?.lifecycle === "terminal" || context?.sessionId === null
+        ? INITIAL_COMPUTE_CONTEXT_GENERATION
+        : (context?.generation ?? INITIAL_COMPUTE_CONTEXT_GENERATION);
+    if (props.contextId !== undefined) {
+      const reserved = useComputeContextStore.getState().reserveSession({
+        contextId: props.contextId,
+        sessionId,
+        generation: requestedGeneration,
+      });
+      if (!reserved) return;
+    }
+    setStartRetryAvailable(false);
     setOperation("start");
     const result = await startSession({
       environmentId: props.environmentId,
       input: {
         cwd: props.cwd,
-        sessionId: ComputeSessionId.make(randomUUID()),
+        sessionId,
         languageId: selectedRuntime.language.descriptor.languageId,
-        executable: selectedRuntime.candidate.profile.executable,
+        executable: runtimeKey === "" ? null : selectedRuntime.candidate.profile.executable,
       },
     });
-    setOperation(null);
+    setOperation((current) => (current === "start" ? null : current));
     if (result._tag === "Success") {
+      setStartRetryAvailable(false);
+      setCapacityBlocked(false);
+      if (
+        props.contextId !== undefined &&
+        !useComputeContextStore.getState().bindSession({
+          contextId: props.contextId,
+          sessionId: result.value.sessionId,
+          generation: result.value.generation,
+        })
+      ) {
+        const current = getComputeContext(props.contextId);
+        if (
+          current?.sessionId === result.value.sessionId &&
+          (current.lifecycle === "closing" || current.lifecycle === "close-failed")
+        ) {
+          void closeComputeContext({
+            contextId: props.contextId,
+            stopSession,
+            getSession,
+          });
+        }
+        return;
+      }
       setSelectedSessionId(result.value.sessionId);
       sessions.refresh();
-    } else if (!isAtomCommandInterrupted(result)) {
-      operationFailure("Unable to start compute", result);
-      runtimes.refresh();
-      sessions.refresh();
+    } else {
+      const capacityRejected = isComputeCapacityReachedError(squashAtomCommandFailure(result));
+      setStartRetryAvailable(!capacityRejected);
+      setCapacityBlocked(capacityRejected);
+      if (capacityRejected && props.contextId !== undefined) {
+        useComputeContextStore.getState().releasePendingReservation({
+          contextId: props.contextId,
+          sessionId,
+          generation: requestedGeneration,
+        });
+      } else {
+        void confirmFailedStart(sessionId, requestedGeneration);
+      }
+      if (!isAtomCommandInterrupted(result)) {
+        operationFailure("Unable to start compute", result);
+        runtimes.refresh();
+        sessions.refresh();
+      }
     }
   };
 
-  const runSessionCommand = async (kind: "interrupt" | "restart" | "stop") => {
-    if (liveSession === null) return;
+  const runSessionCommand = async (
+    kind: "interrupt" | "restart" | "stop",
+    target = liveSession,
+  ) => {
+    if (target === null) return;
+    if (
+      props.contextId !== undefined &&
+      getComputeContext(props.contextId)?.sessionId !== target.sessionId
+    ) {
+      toastManager.add({
+        type: "info",
+        title: "The compute session changed",
+        description: "Choose the intended session again.",
+      });
+      return;
+    }
     setOperation(kind);
+    if (kind === "stop" && props.contextId !== undefined) {
+      await closeComputeContext({ contextId: props.contextId, stopSession, getSession });
+      setOperation((current) => (current === kind ? null : current));
+      sessions.refresh();
+      executions.refresh();
+      return;
+    }
     const command =
       kind === "interrupt" ? interruptSession : kind === "restart" ? restartSession : stopSession;
     const result = await command({
       environmentId: props.environmentId,
       input: {
         cwd: props.cwd,
-        sessionId: liveSession.sessionId,
-        expectedGeneration: liveSession.generation,
+        sessionId: target.sessionId,
+        expectedGeneration: target.generation,
       },
     });
-    setOperation(null);
+    setOperation((current) => (current === kind ? null : current));
+    if (result._tag === "Success" && props.contextId !== undefined) {
+      if (kind === "stop") {
+        useComputeContextStore.getState().markSessionTerminal({
+          contextId: props.contextId,
+          sessionId: result.value.sessionId,
+          generation: result.value.generation,
+        });
+      } else {
+        useComputeContextStore.getState().bindSession({
+          contextId: props.contextId,
+          sessionId: result.value.sessionId,
+          generation: result.value.generation,
+        });
+      }
+    }
     if (result._tag !== "Success" && !isAtomCommandInterrupted(result)) {
       operationFailure(`Unable to ${kind} compute`, result);
     }
@@ -858,17 +1176,38 @@ export function ComputePanel(props: {
   };
 
   const confirmSessionCommand = () => {
-    const kind = sessionConfirmation;
-    if (kind === null) return;
+    const confirmation = sessionConfirmation;
+    if (confirmation === null) return;
     setSessionConfirmation(null);
-    void runSessionCommand(kind);
+    void runSessionCommand(confirmation.kind, confirmation.session);
   };
+
+  const sessionConfirmationAnchor = useMemo(() => {
+    if (sessionConfirmation === null) return undefined;
+    const { x, y, width, height } = sessionConfirmation.anchorRect;
+    return {
+      getBoundingClientRect: () => ({
+        x,
+        y,
+        top: y,
+        right: x + width,
+        bottom: y + height,
+        left: x,
+        width,
+        height,
+      }),
+    };
+  }, [sessionConfirmation]);
 
   return (
     <section className="flex min-h-0 flex-1 flex-col bg-background" aria-label="Scientific results">
-      <header className="flex min-h-12 shrink-0 items-center gap-2 border-b border-border/60 px-3">
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-3 py-1">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1" role="tablist" aria-label="Compute view">
+          <div
+            className="flex flex-wrap items-center gap-1"
+            role="tablist"
+            aria-label="Compute view"
+          >
             <button
               type="button"
               role="tab"
@@ -893,14 +1232,62 @@ export function ComputePanel(props: {
             >
               Variables
             </button>
-            {selectedSession && !props.embedded ? (
+            {!props.embedded && contextBinding !== null ? (
+              <span
+                className={cn(
+                  "max-w-52 truncate text-[11px] text-muted-foreground",
+                  contextBinding.lifecycle === "close-failed" && "text-destructive",
+                )}
+                aria-label={contextBinding.closeError ?? undefined}
+              >
+                {selectedSession
+                  ? computeSessionOwnerLabel(selectedSession, props.environmentId, props.cwd)
+                  : (contextBinding.relativePath ?? "Compute context")}{" "}
+                · {statusLabel(contextBinding.lifecycle)}
+              </span>
+            ) : selectedSession && !props.embedded ? (
               <span className="text-[11px] capitalize text-muted-foreground">
                 {statusLabel(selectedSession.status)}
                 {selectedSession.status === "ready" ? ` · ${selectedSession.activity}` : ""}
               </span>
             ) : null}
+            {capacityBlocked ? (
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button
+                      size="xs"
+                      variant="ghost-muted"
+                      className="h-6 max-w-48 px-1.5 text-[11px] font-normal text-warning"
+                      disabled={stoppingUnusedSession !== null}
+                      aria-label="Choose a compute session to stop"
+                    />
+                  }
+                >
+                  Capacity · choose session
+                </MenuTrigger>
+                <MenuPopup align="start" side="bottom" className="min-w-64">
+                  {capacitySessions.length === 0 ? (
+                    <MenuItem disabled title="Stop a session in another project, then retry">
+                      No active sessions in this project
+                    </MenuItem>
+                  ) : (
+                    capacitySessions.map((session) => (
+                      <MenuItem
+                        key={`${session.sessionId}:${session.generation}`}
+                        disabled={stoppingUnusedSession !== null}
+                        onClick={() => void stopUnusedSession(session)}
+                      >
+                        Stop {computeSessionOwnerLabel(session, props.environmentId, props.cwd)} ·{" "}
+                        {statusLabel(session.status)}
+                      </MenuItem>
+                    ))
+                  )}
+                </MenuPopup>
+              </Menu>
+            ) : null}
           </div>
-          {allSessions.length > (props.embedded ? 1 : 0) ? (
+          {contextSessions.length > (props.embedded ? 1 : 0) ? (
             <Menu>
               <MenuTrigger
                 render={
@@ -912,7 +1299,7 @@ export function ComputePanel(props: {
                   >
                     <span className="truncate">
                       {selectedSession
-                        ? `${new Date(selectedSession.createdAt).toLocaleString()} · ${statusLabel(selectedSession.status)}`
+                        ? `${computeSessionOwnerLabel(selectedSession, props.environmentId, props.cwd)} · ${statusLabel(selectedSession.status)}`
                         : "Session history"}
                     </span>
                     <ChevronDown className="size-3.5 shrink-0" />
@@ -924,12 +1311,13 @@ export function ComputePanel(props: {
                   value={selectedSession?.sessionId ?? ""}
                   onValueChange={(sessionId) => setSelectedSessionId(sessionId)}
                 >
-                  {allSessions.map((session) => (
+                  {contextSessions.map((session) => (
                     <MenuRadioItem
                       key={session.sessionId}
                       value={session.sessionId}
                       className="min-h-7 py-1 sm:text-xs"
                     >
+                      {computeSessionOwnerLabel(session, props.environmentId, props.cwd)} ·{" "}
                       {new Date(session.createdAt).toLocaleString()} · {statusLabel(session.status)}
                     </MenuRadioItem>
                   ))}
@@ -938,8 +1326,44 @@ export function ComputePanel(props: {
             </Menu>
           ) : null}
         </div>
+        {!props.embedded && props.contextId !== undefined && allSessions.length > 0 ? (
+          <Button
+            size="icon-xs"
+            variant="ghost-muted"
+            aria-label="Project compute history"
+            title="Project compute history"
+            onClick={() =>
+              useRightPanelStore
+                .getState()
+                .openScient(props.threadRef, scientComputeSurface({ cwd: props.cwd }))
+            }
+          >
+            <History />
+          </Button>
+        ) : null}
         {liveSession ? (
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
+            {!props.embedded && props.contextId !== undefined ? (
+              <ComputeSavedFileAction
+                contextId={props.contextId}
+                session={liveSession}
+                environmentId={props.environmentId}
+                threadRef={props.threadRef}
+                cwd={props.cwd}
+                disabled={
+                  liveSession.status !== "ready" ||
+                  operation !== null ||
+                  contextBinding?.lifecycle !== "live"
+                }
+                onSubmitted={(execution) => {
+                  setSelectedSessionId(execution.request.sessionId);
+                  setSelectedExecutionId(execution.request.executionId);
+                  setPanelView("results");
+                  sessions.refresh();
+                  executions.refresh();
+                }}
+              />
+            ) : null}
             {!selectedIsLive ? (
               <Button
                 size="xs"
@@ -954,7 +1378,11 @@ export function ComputePanel(props: {
                 size="xs"
                 variant="ghost-muted"
                 aria-label="Interrupt running code and keep session state"
-                disabled={operation !== null}
+                disabled={
+                  operation !== null ||
+                  contextBinding?.lifecycle === "closing" ||
+                  contextBinding?.lifecycle === "close-failed"
+                }
                 onClick={() => void runSessionCommand("interrupt")}
               >
                 {operation === "interrupt" ? <LoaderCircle className="animate-spin" /> : <Square />}
@@ -968,7 +1396,11 @@ export function ComputePanel(props: {
                     size="icon-xs"
                     variant="ghost-muted"
                     aria-label="Session actions"
-                    disabled={operation !== null}
+                    disabled={
+                      operation === "stop" ||
+                      contextBinding?.lifecycle === "closing" ||
+                      contextBinding?.lifecycle === "close-failed"
+                    }
                   />
                 }
               >
@@ -979,19 +1411,52 @@ export function ComputePanel(props: {
                 )}
               </MenuTrigger>
               <MenuPopup align="end" side="bottom" className="min-w-44">
-                <MenuItem onClick={() => setSessionConfirmation("restart")}>
+                <MenuItem
+                  disabled={operation !== null || liveSession?.status !== "ready"}
+                  onClick={(event) => {
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    setSessionConfirmation({
+                      kind: "restart",
+                      session: liveSession,
+                      anchorRect: {
+                        x: bounds.right,
+                        y: bounds.top,
+                        width: 0,
+                        height: bounds.height,
+                      },
+                    });
+                  }}
+                >
                   <RotateCcw />
                   Restart session
                 </MenuItem>
                 <MenuSeparator />
-                <MenuItem variant="destructive" onClick={() => setSessionConfirmation("stop")}>
+                <MenuItem
+                  variant="destructive"
+                  onClick={(event) => {
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    setSessionConfirmation({
+                      kind: "stop",
+                      session: liveSession,
+                      anchorRect: {
+                        x: bounds.right,
+                        y: bounds.top,
+                        width: 0,
+                        height: bounds.height,
+                      },
+                    });
+                  }}
+                >
                   <Power />
                   Stop session
                 </MenuItem>
               </MenuPopup>
             </Menu>
           </div>
-        ) : !props.embedded && allSessions.length > 0 && readyRuntimes.length > 0 ? (
+        ) : !props.embedded &&
+          props.contextId !== undefined &&
+          contextSessions.length > 0 &&
+          selectedRuntime !== null ? (
           <Button
             size="xs"
             variant="outline"
@@ -1001,11 +1466,16 @@ export function ComputePanel(props: {
             {operation === "start" ? <LoaderCircle className="animate-spin" /> : <Play />}
             Start new session
           </Button>
-        ) : !props.embedded && allSessions.length > 0 && !runtimes.isPending ? (
+        ) : !props.embedded && contextSessions.length > 0 && !runtimes.isPending ? (
           <Button
             size="xs"
             variant="ghost-muted"
-            render={<Link to="/settings/scientific-computing" />}
+            render={
+              <Link
+                to="/settings/scientific-computing"
+                search={{ environmentId: props.environmentId }}
+              />
+            }
           >
             Set up compute
           </Button>
@@ -1016,6 +1486,20 @@ export function ComputePanel(props: {
         <div className="flex items-center gap-2 border-b border-warning/20 bg-warning/5 px-3 py-2 text-xs text-warning">
           <LoaderCircle className="size-3 animate-spin" /> Refreshing compute history after a stream
           gap…
+        </div>
+      ) : null}
+
+      {contextBinding?.lifecycle === "close-failed" ? (
+        <div className="flex items-center gap-2 border-b border-destructive/20 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          <CircleAlert className="size-3.5 shrink-0" />
+          <span className="min-w-0 flex-1 truncate">
+            {contextBinding.closeError ?? "Compute tab close was not confirmed."}
+          </span>
+          {props.onRetryClose ? (
+            <Button size="xs" variant="outline" onClick={props.onRetryClose}>
+              Retry close
+            </Button>
+          ) : null}
         </div>
       ) : null}
 
@@ -1060,7 +1544,7 @@ export function ComputePanel(props: {
                   ? "Loading history…"
                   : props.sourcePath
                     ? "Run this file to see its results."
-                    : "Run code from a Python file to begin this session."}
+                    : "Run code from a source file to begin this session."}
               </div>
             ) : (
               <>
@@ -1118,93 +1602,194 @@ export function ComputePanel(props: {
           </div>
         </ScrollArea>
       ) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-          <div className="max-w-sm text-center">
-            {runtimes.isPending ? (
+        <div className="flex min-h-0 flex-1 items-start justify-center overflow-y-auto px-4 pb-6 pt-12">
+          <div className="w-full max-w-md text-center">
+            {props.embedded ? (
+              <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                {contextBinding?.lifecycle === "starting" ? (
+                  <>
+                    <LoaderCircle className="size-3.5 animate-spin" /> Starting…
+                  </>
+                ) : contextBinding?.lifecycle === "closing" ? (
+                  <>
+                    <LoaderCircle className="size-3.5 animate-spin" /> Stopping…
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      className="h-6 px-2"
+                      onClick={props.onRunSource}
+                    >
+                      <Play /> Run
+                    </Button>
+                    <span>to see results.</span>
+                  </>
+                )}
+              </div>
+            ) : props.contextId === undefined ? (
+              <p className="text-sm text-muted-foreground">No compute history yet.</p>
+            ) : runtimes.isPending ? (
               <LoaderCircle className="mx-auto size-5 animate-spin text-muted-foreground" />
             ) : readyRuntimes.length === 0 ? (
-              <>
-                <CircleAlert className="mx-auto size-5 text-muted-foreground" />
-                <p className="mt-3 text-sm font-medium">No compute runtime is ready</p>
-                <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                  Enable a language and choose an existing runtime. Scient will not install packages
-                  or change licenses for you.
-                </p>
-                <Button
-                  className="mt-4"
-                  size="sm"
-                  variant="outline"
-                  render={<Link to="/settings/scientific-computing" />}
-                >
-                  <Settings2 /> Scientific Computing settings
-                </Button>
-              </>
+              pythonLanguage?.managedRuntime &&
+              (props.sourceLanguageId === undefined || props.sourceLanguageId === "python") ? (
+                <div className="text-left">
+                  <p className="text-center text-sm font-medium">Set up scientific computing</p>
+                  <p className="mx-auto mt-1 max-w-lg text-center text-xs leading-relaxed text-muted-foreground">
+                    Set up a private Scientific Python here, or choose an existing environment in
+                    Settings.
+                  </p>
+                  <ManagedRuntimeCard
+                    environmentId={props.environmentId}
+                    language={pythonLanguage}
+                    enabled={pythonPreference.enabled}
+                    ensureEnabled={ensurePythonEnabled}
+                  />
+                  <div className="mt-3 text-center">
+                    <Button
+                      size="xs"
+                      variant="ghost-muted"
+                      render={
+                        <Link
+                          to="/settings/scientific-computing"
+                          search={{ environmentId: props.environmentId }}
+                        />
+                      }
+                    >
+                      <Settings2 /> Use an existing environment
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <CircleAlert className="mx-auto size-5 text-muted-foreground" />
+                  <p className="mt-3 text-sm font-medium">No compute runtime is ready</p>
+                  <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
+                    Enable a language and choose an existing runtime in Scientific Computing
+                    settings.
+                  </p>
+                  <Button
+                    className="mt-4"
+                    size="sm"
+                    variant="outline"
+                    render={
+                      <Link
+                        to="/settings/scientific-computing"
+                        search={{ environmentId: props.environmentId }}
+                      />
+                    }
+                  >
+                    <Settings2 /> Scientific Computing settings
+                  </Button>
+                </>
+              )
             ) : (
               <>
                 <p className="text-sm font-medium">Start a scientific session</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  One live session is kept for this project. Past sessions remain in history.
+                <p className="mx-auto mt-1 max-w-sm text-xs leading-relaxed text-muted-foreground">
+                  This Compute tab owns its own session. Past runs remain in history.
                 </p>
-                <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                  Code runs with this server environment&apos;s filesystem and network access. It is
-                  not sandboxed.
+                <p className="mx-auto mt-1 max-w-sm text-[11px] leading-relaxed text-muted-foreground/80">
+                  Code runs unsandboxed with this server&apos;s filesystem and network access.
                 </p>
-                {readyRuntimes.length > 1 ? (
-                  <select
-                    className="mt-4 h-8 max-w-full cursor-pointer rounded-md border border-input bg-background px-2 text-xs"
-                    value={selectedRuntime?.key ?? ""}
-                    onChange={(event) => setRuntimeKey(event.currentTarget.value)}
-                    aria-label="Runtime"
+                <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
+                  {readyRuntimes.length > 1 || selectedRuntime === null ? (
+                    <Select
+                      value={selectedRuntime?.key ?? ""}
+                      onValueChange={(value) => setRuntimeKey(value ?? "")}
+                    >
+                      <SelectTrigger
+                        size="xs"
+                        className="w-fit min-w-0 max-w-full gap-1.5"
+                        aria-label="Runtime"
+                      >
+                        <SelectValue className="max-w-56">
+                          {selectedRuntime?.candidate.profile.displayName ?? "Choose runtime"}
+                        </SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup alignItemWithTrigger={false}>
+                        {readyRuntimes.map((runtime) => (
+                          <SelectItem
+                            key={runtime.key}
+                            value={runtime.key}
+                            hideIndicator
+                            className="text-xs"
+                          >
+                            {runtime.candidate.profile.displayName}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                  ) : null}
+                  <Button
+                    size="xs"
+                    disabled={
+                      operation !== null ||
+                      selectedRuntime === null ||
+                      stoppingUnusedSession !== null ||
+                      (contextBinding?.lifecycle === "starting" &&
+                        !capacityBlocked &&
+                        !canRetryStart)
+                    }
+                    onClick={() => void handleStart()}
                   >
-                    {readyRuntimes.map((runtime) => (
-                      <option key={runtime.key} value={runtime.key}>
-                        {runtime.candidate.profile.displayName}
-                      </option>
-                    ))}
-                  </select>
-                ) : null}
-                <Button
-                  className="mt-4"
-                  size="sm"
-                  disabled={operation !== null}
-                  onClick={() => void handleStart()}
-                >
-                  {operation === "start" ? <LoaderCircle className="animate-spin" /> : <Play />}
-                  Start session
-                </Button>
+                    {operation === "start" ? <LoaderCircle className="animate-spin" /> : <Play />}
+                    {operation === "start"
+                      ? "Starting…"
+                      : canRetryStart
+                        ? "Retry start"
+                        : "Start session"}
+                  </Button>
+                </div>
               </>
             )}
           </div>
         </div>
       )}
-      <AlertDialog
+      <Popover
         open={sessionConfirmation !== null}
+        modal
         onOpenChange={(open) => {
           if (!open) setSessionConfirmation(null);
         }}
       >
-        <AlertDialogPopup>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {sessionConfirmation === "restart" ? "Restart this session?" : "Stop this session?"}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {sessionConfirmation === "restart"
-                ? "Running and queued code will be cancelled, and all Python variables will be cleared. Run history and retained results stay available."
-                : "The Python kernel will close and its in-memory variables will be lost. Run history and retained results stay available."}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
-            <Button
-              variant={sessionConfirmation === "stop" ? "destructive" : "default"}
-              onClick={confirmSessionCommand}
-            >
-              {sessionConfirmation === "restart" ? "Restart session" : "Stop session"}
-            </Button>
-          </AlertDialogFooter>
-        </AlertDialogPopup>
-      </AlertDialog>
+        <PopoverPopup
+          anchor={sessionConfirmationAnchor}
+          align="center"
+          className="w-72 max-w-[calc(100vw-1rem)]"
+          role="alertdialog"
+          side="left"
+          sideOffset={4}
+          viewportClassName="p-0"
+        >
+          <div className="p-3">
+            <PopoverTitle className="text-sm">
+              {sessionConfirmation?.kind === "restart"
+                ? "Restart this session?"
+                : "Stop this session?"}
+            </PopoverTitle>
+            <PopoverDescription className="mt-1 text-xs leading-5">
+              {sessionConfirmation?.kind === "restart"
+                ? "Cancels queued work and clears variables. Run history stays."
+                : "Closes the runtime and clears its variables. Run history stays."}
+            </PopoverDescription>
+            <div className="mt-3 flex justify-end gap-1.5">
+              <Button size="xs" variant="ghost" onClick={() => setSessionConfirmation(null)}>
+                Cancel
+              </Button>
+              <Button
+                size="xs"
+                variant={sessionConfirmation?.kind === "stop" ? "destructive" : "default"}
+                onClick={confirmSessionCommand}
+              >
+                {sessionConfirmation?.kind === "restart" ? "Restart session" : "Stop session"}
+              </Button>
+            </div>
+          </div>
+        </PopoverPopup>
+      </Popover>
     </section>
   );
 }
