@@ -8,30 +8,56 @@ import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
+const STATE_ENV = "SCIENT_MERMAID_SMOKE_STATE";
+const RENDERER_PROGRESS_PREFIX = "[scient-mermaid-smoke] ";
+
 if (!process.versions.electron) {
   const { resolveElectronBinaryPath } = await import("./electron-launcher.mjs");
-  const environment = { ...process.env };
+  const state = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "scient-mermaid-smoke-"));
+  const environment = { ...process.env, [STATE_ENV]: state };
   delete environment.ELECTRON_RUN_AS_NODE;
-  const result = NodeChildProcess.spawnSync(
-    resolveElectronBinaryPath(),
-    [NodeURL.fileURLToPath(import.meta.url)],
-    { env: environment, stdio: "inherit", timeout: 120_000, killSignal: "SIGTERM" },
-  );
+  let result;
+  try {
+    result = NodeChildProcess.spawnSync(
+      resolveElectronBinaryPath(),
+      [NodeURL.fileURLToPath(import.meta.url)],
+      { env: environment, stdio: "inherit", timeout: 420_000, killSignal: "SIGTERM" },
+    );
+  } finally {
+    // Vite and Electron own files in userData until the child is gone. Keeping
+    // profile cleanup in the parent prevents races with Electron shutdown.
+    NodeFS.rmSync(state, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
   if (result.error) throw result.error;
   process.exit(result.status ?? 1);
 }
 
+async function withTimeout(promise, timeoutMs, describeTimeout) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(describeTimeout())), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function run() {
   const { app, BrowserWindow } = NodeModule.createRequire(import.meta.url)("electron");
-  const state = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "scient-mermaid-smoke-"));
+  const state = process.env[STATE_ENV];
+  NodeAssert.ok(state, `Missing ${STATE_ENV}`);
   app.setPath("userData", state);
   app.dock?.hide();
   app.on("window-all-closed", () => {});
-  const deadline = setTimeout(() => app.exit(1), 100_000);
   const webRoot = NodeURL.fileURLToPath(new URL("../../web/", import.meta.url));
   const webRequire = NodeModule.createRequire(new URL("../../web/package.json", import.meta.url));
   let server;
   let window;
+  let phase = "starting Vite";
   try {
     const { createServer } = await import(webRequire.resolve("vite"));
     server = await createServer({
@@ -50,7 +76,8 @@ async function run() {
         "<!doctype html><html><head><title>Mermaid regression</title></head><body></body></html>",
       );
     });
-    await server.listen();
+    await withTimeout(server.listen(), 45_000, () => `Timed out while ${phase}`);
+    phase = "loading the Mermaid fixture corpus";
     const markdown = await NodeFSP.readFile(
       new URL("../../../docs/fixtures/scient-chat-diagrams.md", import.meta.url),
       "utf8",
@@ -59,14 +86,28 @@ async function run() {
       (match) => match[1],
     );
     NodeAssert.ok(fixtures.length >= 15, "Fixture corpus must not silently disappear");
-    await app.whenReady();
+    phase = "waiting for Electron";
+    await withTimeout(app.whenReady(), 30_000, () => `Timed out while ${phase}`);
+    phase = "creating the Chromium renderer";
     window = new BrowserWindow({
       show: false,
       webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
-    await window.loadURL(`${server.resolvedUrls.local[0]}__mermaid_smoke`);
-    const results = await window.webContents.executeJavaScript(
-      `(${async function (sources) {
+    window.webContents.on("console-message", (details) => {
+      const message = details.message;
+      if (typeof message === "string" && message.startsWith(RENDERER_PROGRESS_PREFIX))
+        phase = message.slice(RENDERER_PROGRESS_PREFIX.length);
+    });
+    await withTimeout(
+      window.loadURL(`${server.resolvedUrls.local[0]}__mermaid_smoke`),
+      30_000,
+      () => `Timed out while ${phase}`,
+    );
+    phase = "starting renderer assertions";
+    const rendererPromise = window.webContents.executeJavaScript(
+      `(${async function (sources, progressPrefix) {
+        const progress = (message) => console.info(`${progressPrefix}${message}`);
+        progress("loading renderer modules");
         const {
           renderMermaidDiagram,
           MermaidRenderError,
@@ -90,6 +131,7 @@ async function run() {
         };
         // The corpus ends with the two deliberately invalid cases. Exercise a
         // failed render first, proving it does not poison the shared render queue.
+        progress("checking native failures and queue recovery");
         for (const source of sources.slice(-2)) {
           let error;
           try {
@@ -107,6 +149,7 @@ async function run() {
         }
         for (const theme of ["light", "dark"]) {
           for (const [index, source] of sources.slice(0, -2).entries()) {
+            progress(`rendering native corpus ${theme}/${index + 1}/${sources.length - 2}`);
             const { svg, diagramType } = await renderMermaidDiagram(source, theme);
             // Match the card's HTML insertion, not XML parsing. Both Mermaid
             // 11 and 12 serialize HTML <br> labels that render correctly here
@@ -142,6 +185,7 @@ async function run() {
           }
         }
         // Stress duplicates, theme serialization and cache ID rebasing together.
+        progress("checking concurrent native cache consumers");
         const copies = await Promise.all(
           Array.from({ length: 48 }, (_, index) =>
             renderMermaidDiagram(
@@ -163,6 +207,7 @@ async function run() {
           await import("/src/scient/diagrams/mermaidRecovery.fixtures.ts");
         const { planMermaidRecovery } = await import("/src/scient/diagrams/mermaidRecovery.ts");
         const recoveryTimings = [];
+        progress("checking user regression fixtures");
         for (const theme of ["light", "dark"]) {
           for (const fixture of userRegressionFixtures) {
             let result;
@@ -185,8 +230,10 @@ async function run() {
               );
           }
         }
+        progress("checking qualified recovery fixtures");
         for (const theme of ["light", "dark"]) {
           for (const fixture of recoveryFixtures) {
+            progress(`recovering ${fixture.name}/${theme}`);
             const start = performance.now();
             let rendered;
             try {
@@ -312,6 +359,7 @@ async function run() {
             }
           }
         }
+        progress("checking deliberately unrecoverable fixtures");
         for (const source of unrecoverableFixtures) {
           let error;
           try {
@@ -376,6 +424,7 @@ async function run() {
           "Recovered cache reused DOM IDs",
         );
         const scanStart = performance.now();
+        progress("checking bounded recovery scanning");
         const stressSource =
           "flowchart LR\n" + "A[Read (local)] -> B\n".repeat(120) + "%% " + "x".repeat(45_000);
         for (let iteration = 0; iteration < 200; iteration += 1) planMermaidRecovery(stressSource);
@@ -402,6 +451,7 @@ async function run() {
           !new DOMParser().parseFromString(untrusted.svg, "text/html").querySelector("script"),
           "Untrusted script survived rendering",
         );
+        progress("renderer assertions complete");
         return {
           version: MERMAID_VERSION,
           fixtures: output,
@@ -415,14 +465,19 @@ async function run() {
             scanMs: Math.round(scanMs),
           },
         };
-      }.toString()})(${JSON.stringify(fixtures)})`,
+      }.toString()})(${JSON.stringify(fixtures)}, ${JSON.stringify(RENDERER_PROGRESS_PREFIX)})`,
+    );
+    const results = await withTimeout(
+      rendererPromise,
+      240_000,
+      () => `Chromium Mermaid smoke test timed out while ${phase}`,
     );
     console.log(JSON.stringify(results, null, 2));
   } finally {
-    clearTimeout(deadline);
+    phase = "closing the Chromium renderer";
     window?.destroy();
-    await server?.close();
-    await NodeFSP.rm(state, { recursive: true, force: true });
+    if (server)
+      await withTimeout(server.close(), 15_000, () => `Timed out while closing the Vite server`);
   }
 }
 
