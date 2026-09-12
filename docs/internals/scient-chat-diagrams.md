@@ -53,6 +53,52 @@ registered.
 
 ## UX and recovery
 
+After a recognized syntax failure, the runtime may attempt one local recovery
+render. `mermaidRecovery.ts` proposes exact UTF-16 edits against the original
+source. The supported rules are deliberately family-specific:
+
+- Explicit diagram declaration/direction casing and header comment placement;
+  no inferred diagram family or direction.
+- Literal flowchart label quoting (including nested parentheses and literal
+  quotes), short/dotted link tokens, and explicit subgraph ID/title delimiters.
+  The scanner supports parallel nodes, named edges and semicolon-separated
+  statements while leaving unrelated multiline labels and modern node data alone.
+- A missing square closer immediately after a complete quoted label and before
+  an explicit link. Bare unclosed labels and mismatched shapes are not guessed.
+- Sequence message/note separators with explicitly declared participants,
+  including full-width colons at that boundary only.
+- Pie label quoting/separators (including the common quoted-label dash typo),
+  literal XY/quadrant chart label quoting, and the narrow quadrant coordinate
+  delimiter repair from `(x, y)` to `[x, y]`, without changing values or chart
+  data.
+- The exact C4 `Persons(...)` command typo is corrected to `Person(...)`;
+  other C4 commands and identifiers remain opaque.
+- Top-level class/state short arrows, accessibility metadata placement in
+  supported families, and a small command-position Git graph typo allowlist.
+
+`mermaidRecoverySyntax.ts` retains original UTF-16 offsets and protects comments,
+frontmatter, directives, rich labels, accessibility prose and class/state bodies.
+Unsupported spans do not prevent independent safe repairs elsewhere. It never
+invents nodes, targets, cardinalities, values or missing block endings. Numeric
+suffixes are bounded before matching to avoid pathological backtracking.
+
+All compatible edits form **one candidate**, capped at 256 edits and the existing
+source limit. Intermediate candidates are never published. Original rendering
+must fail first; a successful original bypasses recovery entirely. Only a full
+native render accepts the candidate. Any remaining syntax, layout or rendering
+failure discards it and exposes the original diagnostic and source through the
+existing error UI. Resource/loading failures do not trigger syntax recovery.
+Original and recovery rendering share one serialized operation; successful
+recovery provenance is cached with the SVG under the original source/theme key.
+
+This is a disposable rendering projection, not a chat or document correction.
+The menu identifies recovered diagrams and offers **Copy recovered source**,
+separately from **Copy original source**. Source inspection, the document-owned
+source editor, context-menu source copy, whole-answer copy and citation identity
+retain the original. Opening a recovered preview cannot create an editor
+transaction or save a file. No agent invocation, extra validation tool, or
+layout-changing recovery notice is added.
+
 The settled card has explicit loading, ready, source, and error states. A parse
 failure shows one compact error line with adjacent repair, copy, and retry icons.
 The failed diagram has no separate toolbar or diagram menu. Its source sits
@@ -157,6 +203,12 @@ Mounted interaction tests cover review-before-send, draft preservation, repeated
 clicks, missing composer/clipboard and stale asynchronous results. Run
 `pnpm --dir apps/desktop test:mermaid-render` for a hidden Chromium test of the
 actual renderer, both themes, full diagnostics and 48 concurrent cache consumers.
+The same check exercises the recovery corpus, the user's mixed valid/broken
+regression corpus, combined fixes, refused ambiguous
+input, semantic label/value preservation, and bounded scanning; unit tests cover
+atomic rollback, source/theme cache separation, stale results, and original-source
+copy/editor ownership. Fixtures describe specific qualified cases, not a general
+guarantee that arbitrary malformed Mermaid can be repaired without guessing.
 It uses only the synthetic fixture corpus and a disposable profile, without
 visual automation or provider calls. On Linux, run it under `xvfb-run`.
 

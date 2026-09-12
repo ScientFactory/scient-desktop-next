@@ -23,13 +23,14 @@ import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 
 type DiagramZoom = "fit" | number;
-type DiagramAction = "copy-source" | "copy-png" | "download-png" | null;
+type DiagramAction = "copy-source" | "copy-recovered-source" | "copy-png" | "download-png" | null;
 
 interface MermaidDiagramDialogProps {
   readonly actionMessage: string | null;
   readonly activeAction: DiagramAction;
   readonly onCopyPng: () => void;
   readonly onCopySource: () => void;
+  readonly onCopyRecoveredSource?: (() => void) | undefined;
   readonly onDownloadPng: () => void;
   readonly onDownloadSvg: () => void;
   readonly open: boolean;
@@ -51,6 +52,7 @@ export function MermaidDiagramDialog({
   activeAction,
   onCopyPng,
   onCopySource,
+  onCopyRecoveredSource,
   onDownloadPng,
   onDownloadSvg,
   onOpenChange,
@@ -159,9 +161,19 @@ export function MermaidDiagramDialog({
                 <TooltipPopup side="bottom">More diagram actions</TooltipPopup>
               </Tooltip>
               <MenuPopup align="end" className="min-w-48">
+                {onCopyRecoveredSource ? (
+                  <MenuItem disabled={activeAction != null} onClick={onCopyRecoveredSource}>
+                    {actionMessage === "Recovered source copied" ? <CheckIcon /> : <CopyIcon />}
+                    Copy recovered source
+                  </MenuItem>
+                ) : null}
                 <MenuItem disabled={activeAction != null} onClick={onCopySource}>
                   {actionMessage === "Source copied" ? <CheckIcon /> : <CopyIcon />}
-                  {activeAction === "copy-source" ? "Copying source…" : "Copy source"}
+                  {activeAction === "copy-source"
+                    ? "Copying source…"
+                    : onCopyRecoveredSource
+                      ? "Copy original source"
+                      : "Copy source"}
                 </MenuItem>
                 <MenuItem disabled={activeAction != null} onClick={onDownloadSvg}>
                   <DownloadIcon />

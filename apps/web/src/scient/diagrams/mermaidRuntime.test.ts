@@ -63,7 +63,7 @@ describe("renderMermaidDiagram input bounds", () => {
     ).toBe("flowchart-v2");
   });
 
-  it("does not silently repair metadata placed before the declaration", async () => {
+  it("confirms native detection rejects misplaced metadata before Scient's recovery pass", async () => {
     const { default: mermaid } = await getMermaidRuntimePromise();
     mermaid.initialize({ startOnLoad: false });
 
