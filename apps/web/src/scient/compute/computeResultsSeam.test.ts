@@ -40,6 +40,10 @@ const settingsSource = NodeFS.readFileSync(
   NodePath.join(here, "ScientificComputingSettings.tsx"),
   "utf8",
 );
+const managedRuntimeSource = NodeFS.readFileSync(
+  NodePath.join(here, "ComputeManagedRuntimeControls.tsx"),
+  "utf8",
+);
 
 describe("compute result surface seam", () => {
   it("keys standalone controls by their owner and preserves producing result generations", () => {
@@ -90,6 +94,10 @@ describe("compute result surface seam", () => {
     expect(outputSource).toContain('case "diagnostic"');
     expect(outputSource).toContain('case "image"');
     expect(panelSource).toContain("Variables");
+    expect(panelSource).toContain('role="tablist"');
+    expect(panelSource).toContain('aria-label="Compute view"');
+    expect(panelSource).not.toContain("setVariablesOpen");
+    expect(panelSource).not.toContain("showVariablesTab");
     expect(panelSource).toContain("not saved in run history");
     expect(outputSource).toContain("diagnostic.frames");
     expect(outputSource).not.toContain("traceback.match");
@@ -98,16 +106,20 @@ describe("compute result surface seam", () => {
 
   it("keeps Python setup contextual to the file toolbar", () => {
     expect(pythonActionsSource).toContain("resolveComputeRuntimeToolbarState");
-    expect(pythonActionsSource).toContain("Open Scientific Computing settings");
-    expect(pythonActionsSource).toContain(
-      "aria-label={`Refresh ${props.language.displayName} detection`}",
-    );
+    expect(pythonActionsSource).toContain("Scientific Computing");
+    expect(pythonActionsSource).toContain("Check again");
+    expect(pythonActionsSource).toContain("handleSetup");
     expect(pythonActionsSource).toContain('runtimeToolbar.kind === "switch"');
     expect(pythonActionsSource).toContain("the next run uses the");
     expect(pythonActionsSource).toContain(
-      "{props.language.displayName} selected in Scientific Computing",
+      "{props.language.displayName} selected in Scientific Computing settings",
     );
     expect(pythonActionsSource).not.toContain("Settings2");
+    expect(pythonActionsSource).toContain("showMatlabOneShotSurface");
+    expect(pythonActionsSource).toContain("pinRuntimeChrome");
+    expect(pythonActionsSource).toContain(
+      'props.language.languageId !== "matlab" && !runtimeToolbar.canRun',
+    );
     expect(panelSource).toContain("if (props.contextId === undefined) return allSessions;");
     expect(panelSource).toContain(
       "return allSessions.filter((session) => session.sessionId === contextBinding.sessionId);",
@@ -119,7 +131,7 @@ describe("compute result surface seam", () => {
     expect(pythonSurfaceSource).toContain("flex-wrap items-center gap-x-2 gap-y-1");
     expect(pythonSurfaceSource).toContain('className="min-w-22 flex-1"');
     expect(pythonActionsSource).toContain("@container/python-file-actions");
-    expect(pythonActionsSource).toContain("@[9rem]/python-file-actions:block");
+    expect(pythonActionsSource).toContain("@[9rem]/python-file-actions:flex");
     expect(pythonActionsSource).toContain("@[15rem]/python-file-actions:inline");
     expect(pythonActionsSource).toContain("aria-label={primary.label}");
     expect(pythonSurfaceSource).toContain('useState<ComputeFileView>("code")');
@@ -132,14 +144,44 @@ describe("compute result surface seam", () => {
     expect(panelSource).toContain("<span>to see results.</span>");
     expect(panelSource).toContain("!props.embedded && contextBinding !== null");
     expect(panelSource.indexOf("onClick={props.onRunSource}")).toBeLessThan(
-      panelSource.indexOf("Start a scientific session"),
+      panelSource.indexOf("Start an extra session"),
     );
     expect(pythonActionsSource).toContain("Switch {props.language.displayName} environment…");
   });
 
-  it("sizes shared setup-card actions by the panel rather than the window", () => {
-    expect(settingsSource).toContain("@container/managed-runtime");
-    expect(settingsSource).toContain("@[32rem]/managed-runtime:flex-row");
+  it("keeps file-header runtime errors to one line with copy and details", () => {
+    expect(pythonActionsSource).toContain('variant="toolbar"');
+    expect(pythonActionsSource).toContain("setupProgress || managedRuntime.failure ? (");
+    expect(pythonActionsSource).not.toContain("setupProgress ? null : capacityBlocked");
+    expect(pythonActionsSource).toContain("connectionSetupFailed:");
+    expect(pythonActionsSource).toContain("onRetry={() => void handleSetup()}");
+    expect(pythonActionsSource).toContain("overflow-hidden");
+    expect(pythonActionsSource).toContain('className="flex shrink-0 items-center"');
+    expect(managedRuntimeSource).toContain("computeRuntimeFailureHeadline");
+    expect(managedRuntimeSource).toContain('aria-label="Copy error"');
+    expect(managedRuntimeSource).toContain("<details");
+    expect(managedRuntimeSource).toContain("whitespace-nowrap");
+    expect(managedRuntimeSource).not.toContain("title={onRetry");
+    expect(managedRuntimeSource).toContain("Copy the full error");
+  });
+
+  it("keeps Scientific Computing settings to the current runtime, not an inventory dashboard", () => {
+    expect(settingsSource).toContain("SettingsRow");
+    expect(settingsSource).toContain("SettingsSection");
+    expect(settingsSource).not.toContain('variant="plain"');
+    expect(settingsSource).not.toContain("Python & MATLAB");
+    expect(settingsSource).not.toContain("Advanced");
+    expect(settingsSource).toContain("Change runtime");
+    expect(settingsSource).toContain("SelectTrigger");
+    expect(settingsSource).toContain("computeRuntimePickerLabel");
+    expect(settingsSource).not.toContain("<select");
+    expect(settingsSource).not.toContain("break-all");
+    expect(settingsSource).toContain("data-compute-actions");
+    expect(settingsSource).not.toContain("ComputeInstallationRow");
+    expect(settingsSource).toContain("Starts and closes a test session");
+    expect(settingsSource).not.toContain("More scientific tools are coming soon");
+    expect(settingsSource).toContain('title="Scientific Computing"');
+    expect(pythonActionsSource).toContain("runtimeVersion:");
   });
 
   it("refreshes the current workspace tree after successful or failed executions", () => {

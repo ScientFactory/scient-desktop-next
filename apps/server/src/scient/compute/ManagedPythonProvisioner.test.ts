@@ -214,4 +214,22 @@ describe("ManagedPythonProvisioner", () => {
     await NodeFSP.writeFile(NodePath.join(source, "uv.lock"), "lock");
     expect(await resolveManagedPythonSpecPath(temporaryRoot)).toBe(source);
   });
+
+  it("does not treat Scientific Python specs as the MATLAB connection helper", async () => {
+    const [source, packaged] = managedPythonSpecPathCandidates(temporaryRoot);
+    if (source === undefined || packaged === undefined) throw new Error("Missing candidates.");
+    await NodeFSP.mkdir(packaged, { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(packaged, "pyproject.toml"), "project");
+    await NodeFSP.writeFile(NodePath.join(packaged, "uv.lock"), "lock");
+    await expect(resolveManagedPythonSpecPath(temporaryRoot, "matlab-connection")).rejects.toThrow(
+      /MATLAB connection helper specification/,
+    );
+
+    const helper = NodePath.join(packaged, "matlab-connection");
+    await NodeFSP.mkdir(helper, { recursive: true });
+    await NodeFSP.writeFile(NodePath.join(helper, "pyproject.toml"), "helper-project");
+    await NodeFSP.writeFile(NodePath.join(helper, "uv.lock"), "helper-lock");
+    expect(await resolveManagedPythonSpecPath(temporaryRoot, "matlab-connection")).toBe(helper);
+    expect(await resolveManagedPythonSpecPath(temporaryRoot)).toBe(packaged);
+  });
 });

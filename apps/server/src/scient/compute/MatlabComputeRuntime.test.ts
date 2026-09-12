@@ -19,6 +19,7 @@ import {
   pathIsInside,
   resolveMatlabBridgePath,
 } from "./MatlabComputeRuntime.ts";
+import { resolveManagedPythonSpecPath } from "./ManagedPythonProvisioner.ts";
 import {
   BRIDGE_SCRIPT_NAME,
   STAGED_BRIDGE_DIRECTORY,
@@ -113,8 +114,15 @@ describe("MATLAB compute bridge location", () => {
       );
       expect(cli).toContain(`dist/${STAGED_BRIDGE_DIRECTORY}/${MATLAB_BRIDGE_SCRIPT_NAME}`);
       expect(cli).toContain(`dist/${STAGED_BRIDGE_DIRECTORY}/scient_compute_bridge.py`);
+      expect(cli).toContain("matlab-connection/pyproject.toml");
+      expect(cli).toContain("matlab-connection/uv.lock");
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it("finds the checked-in MATLAB connection helper specification", async () => {
+    const resolved = await resolveManagedPythonSpecPath(moduleDirectory(), "matlab-connection");
+    expect(resolved).toBe(NodePath.join(moduleDirectory(), "managed-python", "matlab-connection"));
+  });
 
   it.effect("finds a staged MATLAB bridge outside a source checkout", () =>
     Effect.gen(function* () {

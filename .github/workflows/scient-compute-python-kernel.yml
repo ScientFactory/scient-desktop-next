@@ -4,8 +4,8 @@
 #
 # The bridge's own unit tests need nothing but a standard library and so run on
 # every pull request from `ci.yml`. What is here needs `jupyter_client`,
-# `ipykernel` and a live subprocess tree, which is why it is path-filtered and
-# dispatchable rather than always on.
+# `ipykernel`, matplotlib, pandas, and a live subprocess tree, which is why it
+# is path-filtered and dispatchable rather than always on.
 #
 # The matrix is deliberately the platforms this suite has been observed to pass
 # on. Windows is absent because it is unverified, not because it is expected to
@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install "jupyter_client>=8.6" "ipykernel>=6.29" matplotlib
+          python -m pip install "jupyter_client>=8.6" "ipykernel>=6.29" matplotlib pandas
 
       # The absolute path rather than `python`: this value becomes the launch
       # plan's executable, so resolving it once here is what makes the kernel

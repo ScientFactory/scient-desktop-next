@@ -638,6 +638,7 @@ describe("python runtime adapter", () => {
         environment: {},
       });
       expect(verification.readiness).toBe("ready");
+      expect(verification.connection).toBe("detected");
       expect(verification.message).toBeNull();
       expect(verification.packages).toEqual([
         { name: "ipykernel", version: "6.29.0" },
@@ -673,6 +674,7 @@ describe("python runtime adapter", () => {
         environment: {},
       });
       expect(verification.readiness).toBe("missing-requirement");
+      expect(verification.connection).toBeUndefined();
       expect(verification.missingRequirements).toContain("jupyter_client");
       expect(verification.message).toBe(
         "Create or select a Python environment that satisfies: jupyter_client, ipykernel. " +

@@ -43,6 +43,7 @@ export const MANAGED_PYTHON_LOCK_SHA256 =
 export const MANAGED_PYTHON_PROJECT_SHA256 =
   "3cb52386aaa64eb93763cadb7c69b3cd6a174b1ec3f6245fa747cd00ebe1fa38";
 const STAGED_MANAGED_PYTHON_DIRECTORY = "scient-managed-python";
+export type ManagedPythonSpecPurpose = "python" | "matlab-connection";
 
 const PROCESS_TIMEOUT = Duration.minutes(30);
 const PROCESS_DRAIN_GRACE = Duration.seconds(3);
@@ -151,15 +152,26 @@ const UV_ARTIFACTS: Readonly<Record<string, ManagedPythonUvArtifact>> = {
   },
 };
 
-export function managedPythonSpecPathCandidates(directory: string): ReadonlyArray<string> {
+export function managedPythonSpecPathCandidates(
+  directory: string,
+  purpose: ManagedPythonSpecPurpose = "python",
+): ReadonlyArray<string> {
+  const nested = purpose === "matlab-connection" ? ["matlab-connection"] : [];
   return [
-    NodePath.join(directory, "managed-python"),
-    NodePath.join(directory, STAGED_MANAGED_PYTHON_DIRECTORY),
+    NodePath.join(directory, "managed-python", ...nested),
+    NodePath.join(directory, STAGED_MANAGED_PYTHON_DIRECTORY, ...nested),
   ];
 }
 
-export async function resolveManagedPythonSpecPath(directory: string): Promise<string> {
-  const candidates = managedPythonSpecPathCandidates(directory);
+export async function resolveManagedPythonSpecPath(
+  directory: string,
+  purpose: ManagedPythonSpecPurpose = "python",
+): Promise<string> {
+  const candidates = managedPythonSpecPathCandidates(directory, purpose);
+  const noun =
+    purpose === "matlab-connection"
+      ? "MATLAB connection helper specification"
+      : "managed Python specification";
   for (const candidate of candidates) {
     const present = await Promise.all(
       ["pyproject.toml", "uv.lock"].map((file) =>
@@ -171,9 +183,7 @@ export async function resolveManagedPythonSpecPath(directory: string): Promise<s
     );
     if (present.every(Boolean)) return candidate;
   }
-  throw new Error(
-    `Unable to find the managed Python specification. Looked in: ${candidates.join(", ")}.`,
-  );
+  throw new Error(`Unable to find the ${noun}. Looked in: ${candidates.join(", ")}.`);
 }
 
 export function managedPythonUvArtifactForTarget(

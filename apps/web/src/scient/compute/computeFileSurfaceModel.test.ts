@@ -16,6 +16,7 @@ import {
   resolveComputeRuntimeToolbarState,
   defaultComputeRuntime,
   isComputeCapacityReachedError,
+  computeRuntimeFailureHeadline,
 } from "./computeFileSurfaceModel";
 
 const pythonRuntime = {
@@ -116,8 +117,9 @@ describe("python compute surface model", () => {
         readyRuntimeAvailable: true,
         preferredRuntimeExecutable: pythonRuntime.executable,
         scientificPackagesMissing: false,
+        runtimeVersion: pythonRuntime.languageVersion,
       }),
-    ).toEqual({ kind: "status", label: "Python ready", canRun: true });
+    ).toEqual({ kind: "status", label: "Python 3.12.13", canRun: true });
     expect(
       resolveComputeRuntimeToolbarState({
         liveSession: null,
@@ -127,6 +129,32 @@ describe("python compute surface model", () => {
         scientificPackagesMissing: false,
       }),
     ).toEqual({ kind: "setup", label: "Set up Python", canRun: false });
+    expect(
+      resolveComputeRuntimeToolbarState({
+        languageId: "matlab",
+        languageName: "MATLAB",
+        liveSession: null,
+        runtimeInspectionPending: false,
+        readyRuntimeAvailable: false,
+        preferredRuntimeExecutable: null,
+        scientificPackagesMissing: false,
+      }),
+    ).toEqual({ kind: "setup", label: "Connect MATLAB", canRun: false });
+    expect(
+      computeRuntimeFailureHeadline(
+        "matlab",
+        "Scient could not provision the managed Python environment. ENOENT: open '/app/server/dist/scient-managed-python/matlab-connection/uv.lock'",
+      ),
+    ).toBe("Connection setup failed");
+    expect(
+      computeRuntimeFailureHeadline(
+        "python",
+        "Scient could not provision the managed Python environment. ENOENT: uv.lock",
+      ),
+    ).toBe("Python setup failed");
+    expect(computeRuntimeFailureHeadline("python", "Python packages missing")).toBe(
+      "Python packages missing",
+    );
     expect(isComputeCapacityReachedError({ reason: "capacity-reached" })).toBe(true);
     expect(isComputeCapacityReachedError(new Error("capacity-reached"))).toBe(false);
     expect(
@@ -227,8 +255,78 @@ describe("python compute surface model", () => {
         readyRuntimeAvailable: true,
         preferredRuntimeExecutable: pythonRuntime.executable,
         scientificPackagesMissing: true,
+        runtimeVersion: pythonRuntime.languageVersion,
       }),
-    ).toEqual({ kind: "status", label: "Python packages missing", canRun: true });
+    ).toEqual({
+      kind: "status",
+      label: "Python 3.12.13",
+      canRun: true,
+      note: "Figures libraries are not in this environment",
+    });
+  });
+
+  it("does not call a metadata probe Python ready or MATLAB ready", () => {
+    expect(
+      resolveComputeRuntimeToolbarState({
+        languageId: "matlab",
+        languageName: "MATLAB",
+        runtimeVersion: "R2026a",
+        liveSession: null,
+        runtimeInspectionPending: false,
+        readyRuntimeAvailable: true,
+        preferredRuntimeExecutable: "/MATLAB/bin/matlab",
+        scientificPackagesMissing: false,
+      }),
+    ).toEqual({ kind: "status", label: "MATLAB R2026a", canRun: true });
+    expect(
+      resolveComputeRuntimeToolbarState({
+        languageId: "matlab",
+        languageName: "MATLAB",
+        runtimeVersion: "R2026a",
+        liveSession: {
+          activity: "idle",
+          label: "MATLAB",
+          languageId: ComputeLanguageId.make("matlab"),
+          runtime: {
+            ...pythonRuntime,
+            languageId: ComputeLanguageId.make("matlab"),
+            executable: "/MATLAB/bin/matlab",
+            languageVersion: "R2026a",
+            displayName: "MATLAB R2026a",
+          },
+          status: "ready",
+        },
+        runtimeInspectionPending: false,
+        readyRuntimeAvailable: true,
+        preferredRuntimeExecutable: "/MATLAB/bin/matlab",
+        scientificPackagesMissing: false,
+      }),
+    ).toEqual({ kind: "status", label: "MATLAB ready", canRun: true });
+    expect(
+      resolveComputeRuntimeToolbarState({
+        languageId: "matlab",
+        languageName: "MATLAB",
+        runtimeVersion: "R2026a",
+        connectionSetupFailed: true,
+        liveSession: {
+          activity: "idle",
+          label: "MATLAB",
+          languageId: ComputeLanguageId.make("matlab"),
+          runtime: {
+            ...pythonRuntime,
+            languageId: ComputeLanguageId.make("matlab"),
+            executable: "/MATLAB/bin/matlab",
+            languageVersion: "R2026a",
+            displayName: "MATLAB R2026a",
+          },
+          status: "ready",
+        },
+        runtimeInspectionPending: false,
+        readyRuntimeAvailable: true,
+        preferredRuntimeExecutable: "/MATLAB/bin/matlab",
+        scientificPackagesMissing: false,
+      }),
+    ).toEqual({ kind: "setup", label: "Connect MATLAB", canRun: false });
   });
 
   it("does not offer a switch from stale inspection data or while work is running", () => {

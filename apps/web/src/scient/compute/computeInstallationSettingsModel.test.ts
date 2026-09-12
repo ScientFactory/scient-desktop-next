@@ -5,6 +5,8 @@ import {
   type ComputeManagedRuntimeStatus,
 } from "@t3tools/contracts";
 import {
+  computeCurrentRuntimeSummary,
+  computeRuntimePickerLabel,
   defaultComputeInstallation,
   selectExistingComputeInstallation,
 } from "./computeInstallationSettingsModel";
@@ -44,6 +46,18 @@ const inventory: ComputeLanguageRuntimeInventory = {
 };
 
 describe("installation selection", () => {
+  it("labels a runtime without its executable path", () => {
+    expect(computeRuntimePickerLabel(inventory.installations[0]!, "Python")).toBe(
+      "3.12.13 · Scient-managed",
+    );
+    expect(computeRuntimePickerLabel(inventory.installations[1]!, "Python")).toBe(
+      "Python · System installation",
+    );
+    expect(computeRuntimePickerLabel(inventory.installations[0]!, "Python")).not.toContain(
+      "/managed/python",
+    );
+  });
+
   it("uses managed precedence only for Python, independently of an existing path", () => {
     const preference = { enabled: true, executable: "/system/python" };
     expect(defaultComputeInstallation(inventory, preference, status)?.source).toBe("managed");
@@ -170,5 +184,75 @@ describe("installation selection", () => {
       useExisting: release,
     });
     expect(release).not.toHaveBeenCalled();
+  });
+});
+
+describe("current runtime summary", () => {
+  it("describes the selected Python without listing other installations", () => {
+    expect(
+      computeCurrentRuntimeSummary({
+        language: inventory,
+        preference: { enabled: true, executable: "" },
+        managed: status,
+      }),
+    ).toEqual({
+      kind: "ready",
+      title: "3.12.13",
+      detail: "Scient-managed",
+    });
+  });
+
+  it("points Python setup at Change runtime instead of an inventory", () => {
+    expect(
+      computeCurrentRuntimeSummary({
+        language: { ...inventory, installations: [] },
+        preference: { enabled: false, executable: "" },
+        managed: null,
+      }).detail,
+    ).toContain("Change runtime");
+  });
+
+  it("asks MATLAB users to connect an installed runtime instead of setting one up", () => {
+    const matlab = {
+      ...inventory,
+      descriptor: { ...inventory.descriptor, languageId: ComputeLanguageId.make("matlab") },
+      installations: [
+        {
+          executable: "/MATLAB/bin/matlab",
+          source: "conventional" as const,
+          version: "R2026a",
+          problem: null,
+        },
+      ],
+    };
+    expect(
+      computeCurrentRuntimeSummary({
+        language: matlab,
+        preference: { enabled: false, executable: "" },
+        managed: null,
+      }),
+    ).toEqual({
+      kind: "connect",
+      title: "Not connected",
+      detail: "Connect the MATLAB already installed on this server.",
+    });
+    expect(
+      computeCurrentRuntimeSummary({
+        language: { ...matlab, installations: [] },
+        preference: { enabled: false, executable: "" },
+        managed: null,
+      }),
+    ).toEqual({
+      kind: "connect",
+      title: "Not connected",
+      detail: "Connect the MATLAB already installed on this server.",
+    });
+    expect(
+      computeCurrentRuntimeSummary({
+        language: { ...matlab, installations: [] },
+        preference: { enabled: true, executable: "" },
+        managed: null,
+      }).kind,
+    ).toBe("missing");
   });
 });

@@ -317,10 +317,13 @@ export const matlabRuntimeBinding: Effect.Effect<
   const { environment } = sanitizeComputeEnvironment(definedEnvironment(hostEnvironment));
   const helper = yield* Effect.tryPromise({
     try: async () => {
-      const specRoot = await resolveManagedPythonSpecPath(moduleDirectory());
+      const specDirectory = await resolveManagedPythonSpecPath(
+        moduleDirectory(),
+        "matlab-connection",
+      );
       const helper = makeMatlabConnectionHelper({
         computeDir: config.computeDir,
-        specDirectory: NodePath.join(specRoot, "matlab-connection"),
+        specDirectory,
         processes,
         environment,
         platform,

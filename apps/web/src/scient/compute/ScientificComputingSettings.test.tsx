@@ -1,41 +1,8 @@
 import { type ComputeManagedRuntimeStatus } from "@t3tools/contracts";
-import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vite-plus/test";
 import { managedRuntimeOperationLabel } from "./ComputeManagedRuntimeControls";
-import { ComputeInstallationRow } from "./ComputeInstallationRow";
 
 describe("scientific computing installation presentation", () => {
-  it.each(["Python", "MATLAB"])(
-    "shows %s once per row without implying an untested connection works",
-    (languageName) => {
-      const markup = renderToStaticMarkup(
-        <ComputeInstallationRow
-          installation={{
-            executable: "/system/runtime",
-            source: "path",
-            version: "1.0",
-            problem: null,
-          }}
-          languageName={languageName}
-          selected={false}
-          enabled
-          disabled={false}
-          verificationKey="initial"
-          onTest={async () => {
-            throw new Error("Mounting must not test a runtime");
-          }}
-          onUse={() => undefined}
-        />,
-      );
-      expect(markup).toContain("System installation");
-      expect(markup).toContain(">Use<");
-      expect(markup).toContain(">Test<");
-      expect(markup).toContain("Details");
-      expect(markup).not.toContain("Test passed");
-      expect(markup).not.toContain("<code");
-    },
-  );
-
   it("shows bounded truthful lifecycle progress", () => {
     const status = (
       phase: NonNullable<ComputeManagedRuntimeStatus["operation"]>["phase"],

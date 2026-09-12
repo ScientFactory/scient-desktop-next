@@ -8,9 +8,17 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronDown, LoaderCircle, Play, RefreshCwIcon } from "lucide-react";
+import { ChevronDown, LoaderCircle, Play } from "lucide-react";
 import { Link } from "@tanstack/react-router";
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { Button } from "~/components/ui/button";
 import {
@@ -25,7 +33,9 @@ import {
 import { Menu, MenuItem, MenuPopup, MenuSeparator, MenuTrigger } from "~/components/ui/menu";
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
 import { randomUUID } from "~/lib/utils";
+import { useEnvironmentSettings } from "~/hooks/useSettings";
 import { computeEnvironment } from "~/state/compute";
+import { serverEnvironment } from "~/state/server";
 import { useAtomCommand } from "~/state/use-atom-command";
 import { useAtomQueryRunner } from "~/state/use-atom-query-runner";
 import { useEnvironmentQuery } from "~/state/query";
@@ -43,7 +53,14 @@ import {
   defaultComputeRuntime,
   isComputeCapacityReachedError,
   resolveComputeRuntimeToolbarState,
+  computeRuntimeSetupActionLabel,
 } from "./computeFileSurfaceModel";
+import {
+  managedRuntimeOperationLabel,
+  ManagedRuntimeNotice,
+  useComputeManagedRuntime,
+} from "./ComputeManagedRuntimeControls";
+import { showMatlabOneShotSurface } from "./matlabOneShotSurface";
 import {
   computeSessionOwnerLabel,
   ensureComputeContext,
@@ -153,6 +170,42 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
       reportFailure: false,
     });
     const stopSession = useAtomCommand(computeEnvironment.stopSession, { reportFailure: false });
+    const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+      reportFailure: false,
+    });
+    const scientificComputing = useEnvironmentSettings(
+      props.environmentId,
+      (settings) => settings.scientificComputing,
+    );
+    const languageInspection = runtimes.data?.languages.find(
+      (language) => language.descriptor.languageId === props.language.languageId,
+    );
+    const languagePreference = scientificComputing.languages[props.language.languageId] ?? {
+      enabled: false,
+      executable: "",
+    };
+    const managedRuntime = useComputeManagedRuntime({
+      environmentId: props.environmentId,
+      languageId: props.language.languageId,
+      initialStatus: languageInspection?.managedRuntime ?? null,
+      ensureEnabled: async () => {
+        if (languagePreference.enabled) return true;
+        const result = await updateSettings({
+          environmentId: props.environmentId,
+          input: {
+            patch: {
+              scientificComputing: {
+                schemaVersion: 1,
+                languages: {
+                  [props.language.languageId]: { ...languagePreference, enabled: true },
+                },
+              },
+            },
+          },
+        });
+        return result._tag === "Success";
+      },
+    });
     const getSession = useAtomQueryRunner(computeEnvironment.session, {
       reportFailure: false,
       refresh: true,
@@ -257,9 +310,13 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
       scientificToolkit?.readiness === "missing-requirement"
         ? scientificToolkit.missingRequirements
         : [];
+    const setupProgress =
+      managedRuntime.status === null ? null : managedRuntimeOperationLabel(managedRuntime.status);
     const runtimeToolbar = resolveComputeRuntimeToolbarState({
       languageId: props.language.languageId,
       languageName: props.language.displayName,
+      runtimeVersion:
+        readyRuntime?.profile.languageVersion ?? liveSession?.runtime?.languageVersion ?? null,
       liveSession,
       runtimeInspectionPending: runtimes.isPending || refreshing,
       readyRuntimeAvailable: readyRuntime !== null,
@@ -267,6 +324,7 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
       scientificPackagesMissing: missingScientificPackages.length > 0,
       capacityRecoveryAvailable: capacityBlocked,
       startingRetryAvailable: canRetryStart,
+      connectionSetupFailed: Boolean(managedRuntime.failure) && setupProgress === null,
       ...(contextBinding?.lifecycle === undefined
         ? {}
         : { contextLifecycle: contextBinding.lifecycle }),
@@ -358,6 +416,45 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
       refreshSessions,
       props.language.displayName,
     ]);
+
+    const previousManagedOperation = useRef(false);
+    const rediscoveredAfterInstall = useRef(false);
+    useEffect(() => {
+      const operating = managedRuntime.status?.operation != null;
+      if (previousManagedOperation.current && !operating) {
+        rediscoveredAfterInstall.current = false;
+        void refreshRuntime();
+      }
+      previousManagedOperation.current = operating;
+    }, [managedRuntime.status?.operation, refreshRuntime]);
+    useEffect(() => {
+      if (rediscoveredAfterInstall.current) return;
+      if (
+        managedRuntime.status?.installed === true &&
+        managedRuntime.status.operation == null &&
+        readyRuntime === null &&
+        !runtimes.isPending
+      ) {
+        rediscoveredAfterInstall.current = true;
+        void refreshRuntime();
+      }
+    }, [
+      managedRuntime.status?.installed,
+      managedRuntime.status?.operation,
+      readyRuntime,
+      refreshRuntime,
+      runtimes.isPending,
+    ]);
+
+    const handleSetup = useCallback(async () => {
+      if (managedRuntime.busy) return;
+      const isMatlab = props.language.languageId === "matlab";
+      await managedRuntime.act(
+        managedRuntime.status?.installed ? (isMatlab ? "use-managed" : "repair") : "install",
+      );
+      refreshSessions();
+      refreshRuntimeInspection();
+    }, [managedRuntime, props.language.languageId, refreshRuntimeInspection, refreshSessions]);
 
     const switchRuntime = useCallback(async () => {
       if (switchTarget === null || switching) return;
@@ -459,7 +556,7 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
             stackedThreadToast({
               type: "error",
               title: `${props.language.displayName} is not ready`,
-              description: `Enable and configure ${props.language.displayName} in Scientific Computing settings.`,
+              description: `Use ${computeRuntimeSetupActionLabel(props.language.languageId, props.language.displayName)} on this file, or choose another runtime in Scientific Computing settings.`,
             }),
           );
           setOperation(null);
@@ -630,7 +727,26 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
         ? null
         : computeCell(props.contents, caretLine + 1, props.language.cellMarker);
     const fileSlice = computeFile(props.contents);
-    const busy = operation !== null || refreshing || switching || stoppingUnusedSession !== null;
+    const busy =
+      operation !== null ||
+      refreshing ||
+      switching ||
+      stoppingUnusedSession !== null ||
+      managedRuntime.busy;
+    const pinRuntimeChrome =
+      Boolean(setupProgress) ||
+      Boolean(managedRuntime.failure) ||
+      runtimeToolbar.kind === "setup" ||
+      runtimeToolbar.kind === "switch" ||
+      capacityBlocked;
+    const liveRunDisabled = busy || !runtimeToolbar.canRun;
+    const runMenuDisabled =
+      busy || (props.language.languageId !== "matlab" && !runtimeToolbar.canRun);
+    const runtimeNote = runtimeToolbar.kind === "status" ? runtimeToolbar.note : undefined;
+    const runtimeExecutable =
+      liveSession?.runtime?.executable ??
+      readyRuntime?.profile.executable ??
+      `${props.language.displayName} is unavailable`;
 
     useImperativeHandle(
       ref,
@@ -653,8 +769,21 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
     return (
       <>
         <div className="@container/python-file-actions flex min-w-0 items-center justify-end gap-1.5">
-          <div className="hidden min-w-0 flex-1 @[9rem]/python-file-actions:block">
-            {capacityBlocked ? (
+          <div
+            className={
+              pinRuntimeChrome
+                ? "flex min-w-0 flex-1 items-center gap-1 overflow-hidden"
+                : "hidden min-w-0 flex-1 overflow-hidden @[9rem]/python-file-actions:flex @[9rem]/python-file-actions:items-center @[9rem]/python-file-actions:gap-1"
+            }
+          >
+            {setupProgress || managedRuntime.failure ? (
+              <ManagedRuntimeNotice
+                runtime={managedRuntime}
+                languageId={props.language.languageId}
+                variant="toolbar"
+                onRetry={() => void handleSetup()}
+              />
+            ) : capacityBlocked ? (
               <Menu>
                 <MenuTrigger
                   render={
@@ -700,41 +829,66 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
               >
                 <span className="truncate">{runtimeToolbar.label}</span>
               </Button>
-            ) : (
+            ) : runtimeToolbar.kind === "setup" ? (
               <Button
                 size="xs"
-                variant="ghost-muted"
-                className="-ms-1 h-6 min-w-0 max-w-full px-1 text-[11px] font-normal"
-                title={`${liveSession?.runtime?.executable ?? readyRuntime?.profile.executable ?? `${props.language.displayName} is unavailable`}. ${missingScientificPackages.length > 0 ? `Missing scientific packages: ${missingScientificPackages.join(", ")}. ` : ""}Open Scientific Computing settings`}
-                render={
-                  <Link
-                    to="/settings/scientific-computing"
-                    search={{ environmentId: props.environmentId }}
-                  />
-                }
+                className="-ms-1 h-6 min-w-0 max-w-full shrink-0 px-1.5 text-[11px] font-normal"
+                title={`Set up ${props.language.displayName} for this file`}
+                disabled={managedRuntime.busy || refreshing}
+                onClick={() => void handleSetup()}
               >
+                {managedRuntime.busy ? <LoaderCircle className="animate-spin" /> : null}
                 <span className="truncate">{runtimeToolbar.label}</span>
               </Button>
+            ) : (
+              <Menu>
+                <MenuTrigger
+                  render={
+                    <Button
+                      size="xs"
+                      variant="ghost-muted"
+                      className="-ms-1 h-6 min-w-0 max-w-full px-1 text-[11px] font-normal"
+                      title={
+                        runtimeNote === undefined
+                          ? runtimeExecutable
+                          : `${runtimeExecutable}. ${runtimeNote}`
+                      }
+                    />
+                  }
+                >
+                  <span className="truncate">{runtimeToolbar.label}</span>
+                </MenuTrigger>
+                <MenuPopup align="start" side="bottom" className="min-w-56">
+                  <MenuItem disabled>{runtimeExecutable}</MenuItem>
+                  {runtimeNote === undefined ? null : <MenuItem disabled>{runtimeNote}</MenuItem>}
+                  <MenuSeparator />
+                  <MenuItem
+                    disabled={refreshing || switching}
+                    onClick={() => void refreshRuntime()}
+                  >
+                    Check again
+                  </MenuItem>
+                  <MenuItem
+                    render={
+                      <Link
+                        to="/settings/scientific-computing"
+                        search={{ environmentId: props.environmentId }}
+                      />
+                    }
+                  >
+                    Scientific Computing
+                  </MenuItem>
+                </MenuPopup>
+              </Menu>
             )}
           </div>
-          <Button
-            size="icon-xs"
-            variant="ghost-muted"
-            className="shrink-0"
-            aria-label={`Refresh ${props.language.displayName} detection`}
-            title={`Check ${props.language.displayName} again`}
-            disabled={refreshing || switching}
-            onClick={() => void refreshRuntime()}
-          >
-            {refreshing ? <LoaderCircle className="animate-spin" /> : <RefreshCwIcon />}
-          </Button>
           <div className="flex shrink-0 items-center">
             <Button
               size="xs"
               variant="outline"
               className="rounded-r-none px-1.5 @[15rem]/python-file-actions:px-[calc(--spacing(2)-1px)]"
               aria-label={primary.label}
-              disabled={busy || !runtimeToolbar.canRun || primary.slice === null}
+              disabled={liveRunDisabled || primary.slice === null}
               onClick={() => void run(primary.kind, primary.slice)}
             >
               {operation === primary.kind ? <LoaderCircle className="animate-spin" /> : <Play />}
@@ -747,7 +901,7 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
                     size="icon-xs"
                     variant="outline"
                     className="rounded-l-none border-l-0"
-                    disabled={busy || !runtimeToolbar.canRun}
+                    disabled={runMenuDisabled}
                     aria-label={`Choose ${props.language.displayName} code to run`}
                   />
                 }
@@ -756,15 +910,21 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
               </MenuTrigger>
               <MenuPopup align="end" side="bottom">
                 <MenuItem
-                  disabled={selectionSlice === null}
+                  disabled={liveRunDisabled || selectionSlice === null}
                   onClick={() => void run("selection", selectionSlice)}
                 >
                   Run selection
                 </MenuItem>
-                <MenuItem disabled={cellSlice === null} onClick={() => void run("cell", cellSlice)}>
+                <MenuItem
+                  disabled={liveRunDisabled || cellSlice === null}
+                  onClick={() => void run("cell", cellSlice)}
+                >
                   Run cell
                 </MenuItem>
-                <MenuItem disabled={fileSlice === null} onClick={() => void run("file", fileSlice)}>
+                <MenuItem
+                  disabled={liveRunDisabled || fileSlice === null}
+                  onClick={() => void run("file", fileSlice)}
+                >
                   Run file
                 </MenuItem>
                 {runtimeToolbar.kind === "switch" ? (
@@ -772,6 +932,14 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
                     <MenuSeparator />
                     <MenuItem onClick={requestRuntimeSwitch}>
                       Switch {props.language.displayName} environment…
+                    </MenuItem>
+                  </>
+                ) : null}
+                {props.language.languageId === "matlab" ? (
+                  <>
+                    <MenuSeparator />
+                    <MenuItem onClick={() => showMatlabOneShotSurface(props.relativePath)}>
+                      Run as one-shot…
                     </MenuItem>
                   </>
                 ) : null}
@@ -791,7 +959,7 @@ export const ComputeFileActions = forwardRef<ComputeFileActionsHandle, ComputeFi
               <AlertDialogDescription>
                 This stops the current {props.language.displayName} session and clears its in-memory
                 variables. Run history remains available, and the next run uses the{" "}
-                {props.language.displayName} selected in Scientific Computing.
+                {props.language.displayName} selected in Scientific Computing settings.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

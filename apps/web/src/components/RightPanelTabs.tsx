@@ -54,6 +54,7 @@ import {
   Menu,
   MenuItem,
   MenuPopup,
+  MenuSeparator,
   MenuShortcut,
   MenuSub,
   MenuSubPopup,
@@ -394,16 +395,6 @@ function RightPanelEmptyState(props: {
       badgeCount: 0,
     },
     {
-      label: "Compute",
-      description: "Run and inspect scientific code.",
-      icon: Sigma,
-      shortcut: "C",
-      available: props.computeAvailable,
-      disabledReason: SURFACE_DISABLED_REASONS.compute,
-      onClick: props.onAddCompute,
-      badgeCount: 0,
-    },
-    {
       label: "Browser",
       description: "Open a local app or URL.",
       icon: Globe2,
@@ -678,6 +669,17 @@ function RightPanelEmptyState(props: {
             ),
           )}
         </div>
+        {props.computeAvailable ? (
+          <div className="mt-3 text-center">
+            <button
+              type="button"
+              className="cursor-pointer text-xs text-muted-foreground hover:text-foreground"
+              onClick={props.onAddCompute}
+            >
+              Extra session
+            </button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
@@ -1010,8 +1012,20 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
     },
   ] as const;
 
+  const extraSessionAction = {
+    label: "Extra session",
+    icon: Sigma,
+    shortcut: "C",
+    available: props.computeAvailable,
+    disabledReason: SURFACE_DISABLED_REASONS.compute,
+    onClick: props.onAddCompute,
+  } as const;
+
   const handleAddSurfaceMenuKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    const action = surfaceShortcutActionForKey(addSurfaceActions, event.nativeEvent);
+    const action = surfaceShortcutActionForKey(
+      [...addSurfaceActions, extraSessionAction],
+      event.nativeEvent,
+    );
     if (!action) return;
     event.preventDefault();
     event.stopPropagation();
@@ -1372,6 +1386,21 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                       </SurfaceMenuItem>
                     );
                   })}
+                  <MenuSeparator />
+                  <MenuSub>
+                    <MenuSubTrigger>Advanced</MenuSubTrigger>
+                    <MenuSubPopup className="min-w-44">
+                      <SurfaceMenuItem
+                        available={extraSessionAction.available}
+                        disabledReason={extraSessionAction.disabledReason}
+                        shortcut={extraSessionAction.shortcut}
+                        onClick={extraSessionAction.onClick}
+                      >
+                        <Sigma />
+                        Extra session
+                      </SurfaceMenuItem>
+                    </MenuSubPopup>
+                  </MenuSub>
                 </MenuPopup>
               </Menu>
             ) : null}

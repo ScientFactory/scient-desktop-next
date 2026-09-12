@@ -19,7 +19,7 @@ export class ScientComputeInventoryToolError extends Schema.TaggedError<ScientCo
   },
 ) {}
 
-export const ScientComputeInventoryTool = Tool.make("scient_compute_inventory", {
+const ScientComputeInventoryTool = Tool.make("scient_compute_inventory", {
   description:
     "Read the bounded Scient Compute runtime inventory for the server. It distinguishes configured settings, managed-runtime status, and existing runtime candidates. This is read-only discovery: readiness is unknown unless a separate verified result says otherwise; it never installs, runs, executes, or attaches to a runtime or project session.",
   parameters: EmptyToolInput,

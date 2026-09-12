@@ -26,7 +26,16 @@ vi.mock("~/state/compute", () => ({
     submitExecution: "submit",
     refreshRuntimes: "refresh",
     stopSession: "stop",
+    manageRuntime: "manage",
+    cancelManagedRuntime: "cancel",
+    managedRuntime: () => null,
   },
+}));
+vi.mock("~/hooks/useSettings", () => ({
+  useEnvironmentSettings: () => ({ languages: { python: { enabled: true, executable: "" } } }),
+}));
+vi.mock("~/state/server", () => ({
+  serverEnvironment: { updateSettings: "update" },
 }));
 vi.mock("~/state/query", () => ({
   useEnvironmentQuery: (query: string) => ({

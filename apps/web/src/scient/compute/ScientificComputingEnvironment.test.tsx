@@ -1,6 +1,6 @@
 import { EnvironmentId } from "@t3tools/contracts";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { ReactElement, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const mocks = vi.hoisted(() => ({
@@ -88,13 +88,23 @@ vi.mock("~/components/settings/settingsLayout", () => ({
     </section>
   ),
   SettingsRow: ({
+    title,
+    description,
     control,
+    children,
   }: {
-    control: ReactElement<{ onCheckedChange: (enabled: boolean) => void }>;
-  }) => {
-    mocks.toggle = control.props.onCheckedChange;
-    return null;
-  },
+    title?: ReactNode;
+    description?: ReactNode;
+    control?: ReactNode;
+    children?: ReactNode;
+  }) => (
+    <div>
+      {title}
+      {description}
+      {control}
+      {children}
+    </div>
+  ),
 }));
 
 import { ScientificComputingSettings } from "./ScientificComputingSettings";
@@ -136,7 +146,8 @@ describe("Scientific Computing environment ownership", () => {
   it("uses the primary environment only when none was requested", () => {
     const markup = renderToStaticMarkup(<ScientificComputingSettings />);
     expect(mocks.readSettings).toHaveBeenCalledWith("local-server");
-    expect(markup).toContain("More scientific tools are coming soon");
+    expect(markup).not.toContain("More scientific tools are coming soon");
+    expect(markup).toContain("Change runtime");
   });
 
   it("renders truthful language cards while the inventory is loading", () => {

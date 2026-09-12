@@ -255,13 +255,14 @@ describe.runIf(Boolean(TEST_PYTHON))("Python kernel integration", () => {
         const outputs = observed.flatMap((event) =>
           event._tag === "output" ? [event.output] : [],
         );
-        expect(outputs.map(({ _tag }) => _tag)).toEqual([
+        const displayOutputs = outputs.filter((output) => output._tag !== "stream");
+        expect(displayOutputs.map(({ _tag }) => _tag)).toEqual([
           "display-data",
           "display-update",
           "clear-output",
           "display-data",
         ]);
-        const first = outputs[0];
+        const first = displayOutputs[0];
         if (first?._tag !== "display-data") throw new Error("Expected display data.");
         expect(first.bundle.representations.map(({ mediaType }) => mediaType)).toEqual([
           "text/plain",
@@ -269,7 +270,7 @@ describe.runIf(Boolean(TEST_PYTHON))("Python kernel integration", () => {
           "image/svg+xml",
         ]);
         expect(first.displayId).toBe("shared-display");
-        const projected = projectComputeOutputs(outputs);
+        const projected = projectComputeOutputs(displayOutputs);
         expect(projected).toHaveLength(1);
         expect(projected[0]).toMatchObject({
           _tag: "representation",
@@ -540,8 +541,11 @@ describe.runIf(Boolean(TEST_PYTHON))("Python kernel integration", () => {
           .join("");
         expect(text).toContain("line-0\n");
         expect(text).toContain("line-19999\n");
-        // Every line, in order, however the kernel chose to batch them.
-        expect(text.split("\n").filter((line) => line.length > 0)).toHaveLength(20000);
+        // Count only the flood lines. Older kernels can emit a leading stderr
+        // warning, which must not be mistaken for a dropped or extra payload line.
+        const lines = text.split("\n").filter((line) => /^line-\d+$/.test(line));
+        expect(lines).toHaveLength(20000);
+        expect(lines.find((line, index) => line !== `line-${index}`)).toBeUndefined();
 
         const afterwards = yield* execute(harness, "after-flood", "6 * 7");
         expect(afterwards.some((event) => outputText(event)?.includes("42") === true)).toBe(true);

@@ -86,12 +86,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     id: "scientific-computing",
     title: "Scientific Computing",
     to: "/settings/scientific-computing",
+    searchTerms: ["scientific computing", "python", "matlab", "runtimes"],
   },
   {
     id: "scientific-computing-language",
-    title: "Scientific computing languages and runtimes",
+    title: "Python and MATLAB languages and runtimes",
     to: "/settings/scientific-computing",
     targetId: "scientific-computing",
+    searchTerms: ["scientific computing languages"],
   },
   {
     id: "project-defaults",

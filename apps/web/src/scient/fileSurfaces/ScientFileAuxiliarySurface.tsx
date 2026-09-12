@@ -1,6 +1,7 @@
 import type { EnvironmentId, ScopedThreadRef } from "@t3tools/contracts";
 
 import { AnalysisRunFilePanel } from "~/scient/analysis/AnalysisRunFilePanel";
+import { useMatlabOneShotSurface } from "~/scient/compute/matlabOneShotSurface";
 
 interface ScientFileAuxiliarySurfaceProps {
   readonly environmentId: EnvironmentId;
@@ -17,17 +18,19 @@ interface ScientFileAuxiliarySurfaceProps {
  * Format-specific surfaces belong here so upstream viewer updates stay isolated.
  */
 export function ScientFileAuxiliarySurface(props: ScientFileAuxiliarySurfaceProps) {
+  const oneShotVisible = useMatlabOneShotSurface(props.relativePath);
   if (
     props.relativePath === null ||
     props.sourceRevision === null ||
     props.truncated ||
-    !props.relativePath.toLowerCase().endsWith(".m")
+    !props.relativePath.toLowerCase().endsWith(".m") ||
+    !oneShotVisible
   ) {
     return null;
   }
 
   return (
-    <details className="shrink-0 border-t border-border/70">
+    <details open className="shrink-0 border-t border-border/70">
       <summary className="cursor-pointer px-3 py-2 text-xs text-muted-foreground">
         Fresh-process MATLAB runs
       </summary>

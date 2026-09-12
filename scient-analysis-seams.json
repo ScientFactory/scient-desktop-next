@@ -2,6 +2,7 @@
   "schemaVersion": 2,
   "owner": "ScientFactory",
   "ownedRoots": [
+    "apps/server/src/mcp/toolkits/compute",
     "apps/server/src/scient/analysis",
     "apps/server/src/scient/compute",
     "apps/server/src/scient/execution",

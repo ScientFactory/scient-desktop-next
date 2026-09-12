@@ -229,6 +229,15 @@ const FILE_EDITOR_ACTION_GUTTER_UNSAFE_CSS = `
     right: auto;
     left: 0;
     justify-content: flex-start;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  [data-line]:hover [data-gutter-utility-slot],
+  [data-line]:focus-within [data-gutter-utility-slot],
+  [data-gutter-utility-slot]:focus-within {
+    opacity: 1;
+    pointer-events: auto;
   }
 `;
 const ScientPdfReader = lazy(() =>
@@ -811,6 +820,8 @@ interface EditableFileSurfaceProps {
     getHoveredLine: () => GetHoveredLineResult<"file"> | undefined,
   ) => ReactNode;
   onRunShortcut?: (selection: EditorSelection | null) => void;
+  /** Inline review comments. Off for compute files: gutter/line selection must not open a composer. */
+  enableFileComments?: boolean;
 }
 
 interface FileSelectionOverride {
@@ -860,6 +871,7 @@ function EditableFileEditor({
   onEditorSelectionChange,
   renderEditorGutterAction,
   onRunShortcut,
+  enableFileComments = true,
 }: Omit<
   EditableFileSurfaceProps,
   | "onPendingChange"
@@ -1108,11 +1120,11 @@ function EditableFileEditor({
   const handleLineSelectionEnd = useCallback(
     (range: SelectedLineRange | null) => {
       setSelectedRange(range);
-      if (range && onSelectionChange === undefined) {
+      if (range && onSelectionChange === undefined && enableFileComments) {
         beginComment(range);
       }
     },
-    [beginComment, onSelectionChange, setSelectedRange],
+    [beginComment, enableFileComments, onSelectionChange, setSelectedRange],
   );
   const handleGutterUtilityClick = useCallback(
     (range: SelectedLineRange) => {
@@ -1198,9 +1210,11 @@ function EditableFileEditor({
               }}
               options={{
                 disableFileHeader: true,
-                enableGutterUtility: renderEditorGutterAction !== undefined || !hasOpenCommentForm,
+                enableGutterUtility:
+                  renderEditorGutterAction !== undefined ||
+                  (enableFileComments && !hasOpenCommentForm),
                 enableLineSelection: !hasOpenCommentForm,
-                ...(renderEditorGutterAction === undefined
+                ...(renderEditorGutterAction === undefined && enableFileComments
                   ? { onGutterUtilityClick: handleGutterUtilityClick }
                   : {}),
                 onLineSelectionChange: setSelectedRange,
@@ -1210,13 +1224,13 @@ function EditableFileEditor({
                 preferredHighlighter: PREFERRED_HIGHLIGHTER,
                 themeType: resolvedTheme,
                 unsafeCSS:
-                  renderEditorGutterAction === undefined
-                    ? FILE_LINK_REVEAL_UNSAFE_CSS
-                    : FILE_EDITOR_ACTION_GUTTER_UNSAFE_CSS,
+                  renderEditorGutterAction !== undefined || enableFileComments
+                    ? FILE_EDITOR_ACTION_GUTTER_UNSAFE_CSS
+                    : FILE_LINK_REVEAL_UNSAFE_CSS,
                 onPostRender: handlePostRender,
               }}
               selectedLines={displayedRange}
-              lineAnnotations={lineAnnotations}
+              lineAnnotations={enableFileComments ? lineAnnotations : []}
               renderAnnotation={(annotation) => (
                 <div className="py-1">
                   {annotation.metadata.entries.map((entry) => (

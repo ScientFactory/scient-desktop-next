@@ -289,6 +289,7 @@ export function ScientComputeFileSurface(props: ScientComputeFileSurfaceProps) {
               onSelectionChange={setSelection}
               activeLineRange={activeCellRange}
               onEditorSelectionChange={setEditorSelection}
+              enableFileComments={false}
               {...(hasExplicitCells
                 ? {
                     renderEditorGutterAction: (

@@ -316,7 +316,7 @@ export function ComputeOutputView(props: {
                           />
                         }
                       >
-                        Python environments
+                        Scientific Computing
                       </Button>
                     ) : null}
                     <ComputeDiagnosticFrames

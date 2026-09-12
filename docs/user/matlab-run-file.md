@@ -8,14 +8,19 @@ user-installed and licensed MATLAB in the selected project environment.
 ## Live session
 
 The code/results controls above a `.m` file run it in a live MATLAB session.
-Enable MATLAB and check its runtime in **Settings → Scientific Computing**.
-The Engine connection requires a compatible Python host. Settings can set up a
-small private **MATLAB connection helper**, or use an existing compatible host.
-Scient does not install MATLAB or its license. **MATLAB ready** and **Set up MATLAB** both open those
-settings, and the nearby refresh action checks detection again.
+Choose **Connect MATLAB** on that file when MATLAB is not ready yet. The Engine
+connection requires a compatible Python host. Scient can set up a small private
+**MATLAB connection helper**, or choose an existing compatible host from
+**Settings → Scientific Computing → Change runtime**.
+That helper is independent of Scientific Python. Opening a `.m` file does not
+provision the scientific Toolkit; a helper setup failure is a one-line header
+status with copy and details, not a wrapped stack across **Run**, and not
+**MATLAB ready**. Retry from that status; the header shows one of **Connect MATLAB**,
+the short failure, or ready after the helper can start.
+Scient does not install MATLAB or its license. The file header names the detected
+release until a live session starts; **MATLAB ready** means that session is up.
+Use the status menu to **Check again** or open those settings.
 
-In Settings, **Detected** means the Engine import is available; **Verify connection**
-starts and closes a temporary native MATLAB session to check the license and startup.
 The executable preference is shared with fresh-process runs. Their older setup control
 now writes this same preference instead of maintaining a second runtime choice.
 See [Connect your MATLAB installation](scientific-computing.md#connect-your-matlab-installation)
@@ -26,11 +31,12 @@ asks whether Scient can access Documents, answer that permission prompt before
 retrying the session. Scient does not grant operating-system permissions for you.
 
 Use **Run file**, **Run selection**, or **Run cell** for `%%` sections. Variables
-remain available between runs until the session stops or restarts. Results and
-Variables share the same panel used by Python. Running code is not sandboxed.
+remain available between runs until the session stops or restarts. Open **Variables**
+next to **Results**; it is always a sibling tab on that pane.
+Running code is not sandboxed.
 
-For saved-file batch execution and portable run artifacts, expand
-**Fresh-process MATLAB runs** below the file. This is the existing workflow:
+For saved-file batch execution and portable run artifacts, choose **Run as one-shot…**
+from the file's Run menu. This is the existing workflow:
 
 ## Fresh-process file run
 

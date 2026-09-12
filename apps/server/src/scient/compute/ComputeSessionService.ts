@@ -717,6 +717,9 @@ const make = Effect.gen(function* () {
             computeError("verify", "runtime-unusable", cause.message, cause),
           ),
         );
+      // Adapters mark a successful probe `connection: "detected"`. Inspect uses
+      // that probe only. This gate is what makes verifyRuntime actually start
+      // and close a session, the same way MATLAB Test does.
       if (verification.readiness !== "ready" || verification.connection !== "detected")
         return verification;
       if (binding.managedRuntime?.isRemoving()) {

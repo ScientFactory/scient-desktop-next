@@ -126,6 +126,12 @@ const encodeRecord = Schema.encodeSync(Schema.fromJsonString(ManagedPythonEnviro
 
 export type ManagedPythonPurpose = "python" | "matlab-connection";
 
+function managedPurposeNoun(purpose: ManagedPythonPurpose): string {
+  return purpose === "matlab-connection"
+    ? "MATLAB connection helper"
+    : "managed Python environment";
+}
+
 export function managedPythonEnvironmentPaths(
   computeDir: string,
   purpose: ManagedPythonPurpose = "python",
@@ -179,6 +185,16 @@ async function managedDirectorySafety(paths: ManagedPythonEnvironmentPaths): Pro
     return true;
   };
 
+  const realpathPresent = async (directory: string): Promise<string | null> => {
+    try {
+      return await NodeFSP.realpath(directory);
+    } catch (cause) {
+      const code = (cause as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return null;
+      throw cause;
+    }
+  };
+
   const environmentsPresent = await inspectDirectory(
     paths.environmentsRoot,
     "managed environments",
@@ -186,8 +202,16 @@ async function managedDirectorySafety(paths: ManagedPythonEnvironmentPaths): Pro
   if (!environmentsPresent) return { environmentsPresent: false, managedPresent: false };
   const managedPresent = await inspectDirectory(paths.managedRoot, "managed Python");
   if (!managedPresent) return { environmentsPresent: true, managedPresent: false };
-  const canonicalEnvironments = await NodeFSP.realpath(paths.environmentsRoot);
-  const canonicalManaged = await NodeFSP.realpath(paths.managedRoot);
+  // Removal renames the managed root to a sibling tombstone before deleting it.
+  // Inspect/status can run in that window; a vanished path is absence, not failure.
+  const canonicalEnvironments = await realpathPresent(paths.environmentsRoot);
+  if (canonicalEnvironments === null) {
+    return { environmentsPresent: false, managedPresent: false };
+  }
+  const canonicalManaged = await realpathPresent(paths.managedRoot);
+  if (canonicalManaged === null) {
+    return { environmentsPresent: true, managedPresent: false };
+  }
   if (
     canonicalManaged === canonicalEnvironments ||
     !isContained(canonicalEnvironments, canonicalManaged)
@@ -438,7 +462,7 @@ export function makeManagedPythonEnvironmentManager(
             }
             throw new ManagedPythonEnvironmentError(
               "provision-failed",
-              "Scient could not provision the managed Python environment.",
+              `Scient could not provision the ${managedPurposeNoun(purpose)}.`,
               { cause },
             );
           });
@@ -504,7 +528,7 @@ export function makeManagedPythonEnvironmentManager(
             }
             throw new ManagedPythonEnvironmentError(
               "verification-failed",
-              "The managed Python environment did not pass verification.",
+              `The ${managedPurposeNoun(purpose)} did not pass verification.`,
               { cause },
             );
           });
@@ -533,7 +557,7 @@ export function makeManagedPythonEnvironmentManager(
         await commitState(paths.statePath, record).catch((cause) => {
           throw new ManagedPythonEnvironmentError(
             "activation-failed",
-            "Scient could not activate the verified managed Python environment.",
+            `Scient could not activate the verified ${managedPurposeNoun(purpose)}.`,
             { cause },
           );
         });
@@ -562,7 +586,9 @@ export function makeManagedPythonEnvironmentManager(
         if (selection === "existing") return null;
         throw new ManagedPythonEnvironmentError(
           "invalid-request",
-          "Set up Scientific Python before selecting it.",
+          purpose === "matlab-connection"
+            ? "Set up the MATLAB connection helper before selecting it."
+            : "Set up Scientific Python before selecting it.",
         );
       }
       if (current.record.selection === selection) return current;
@@ -570,7 +596,9 @@ export function makeManagedPythonEnvironmentManager(
       await commitState(paths.statePath, record).catch((cause) => {
         throw new ManagedPythonEnvironmentError(
           "activation-failed",
-          "Scient could not change the selected Python environment.",
+          purpose === "matlab-connection"
+            ? "Scient could not change the selected MATLAB connection helper."
+            : "Scient could not change the selected Python environment.",
           { cause },
         );
       });
@@ -589,7 +617,7 @@ export function makeManagedPythonEnvironmentManager(
       await NodeFSP.rename(paths.managedRoot, tombstone).catch((cause) => {
         throw new ManagedPythonEnvironmentError(
           "remove-failed",
-          "Scient could not prepare the managed Python environment for removal.",
+          `Scient could not prepare the ${managedPurposeNoun(purpose)} for removal.`,
           { cause },
         );
       });
@@ -601,13 +629,13 @@ export function makeManagedPythonEnvironmentManager(
         } catch (rollbackCause) {
           throw new ManagedPythonEnvironmentError(
             "remove-failed",
-            "Scient could not remove the managed Python environment or restore it.",
+            `Scient could not remove the ${managedPurposeNoun(purpose)} or restore it.`,
             { cause: new AggregateError([cause, rollbackCause]) },
           );
         }
         throw new ManagedPythonEnvironmentError(
           "remove-failed",
-          "Scient could not remove the managed Python environment; the previous environment was restored.",
+          `Scient could not remove the ${managedPurposeNoun(purpose)}; the previous environment was restored.`,
           { cause },
         );
       }

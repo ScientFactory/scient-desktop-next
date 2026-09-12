@@ -212,6 +212,11 @@ describe("Scient right-panel surfaces", () => {
     );
     expect(
       scientRightPanelSurfaceTitle(
+        scientComputeSurface({ cwd: "/project", contextId: "owner-1" as ComputeContextId }),
+      ),
+    ).toBe("Extra session");
+    expect(
+      scientRightPanelSurfaceTitle(
         scientSourcePdfSurface({
           sourceId: "source_1",
           attachmentId: "pdf_1",

@@ -49,6 +49,12 @@ const SCIENT_COMPUTE_BRIDGES = [
 ] as const;
 const SCIENT_MANAGED_PYTHON_SOURCE = "src/scient/compute/managed-python";
 const SCIENT_MANAGED_PYTHON_ASSET = "dist/scient-managed-python";
+const SCIENT_MANAGED_PYTHON_SPEC_FILES = [
+  "pyproject.toml",
+  "uv.lock",
+  "matlab-connection/pyproject.toml",
+  "matlab-connection/uv.lock",
+] as const;
 
 interface PackageJson {
   name: string;
@@ -211,16 +217,17 @@ const buildCmd = Command.make(
       // must never resolve a package graph from source code or user config.
       const managedPythonSource = path.join(serverDir, SCIENT_MANAGED_PYTHON_SOURCE);
       const managedPythonTarget = path.join(serverDir, SCIENT_MANAGED_PYTHON_ASSET);
-      for (const file of ["pyproject.toml", "uv.lock"]) {
+      for (const file of SCIENT_MANAGED_PYTHON_SPEC_FILES) {
         const source = path.join(managedPythonSource, file);
         if (!(yield* fs.exists(source))) {
           return yield* new ServerCliBuildAssetMissingError({ assetPath: source });
         }
-        yield* fs.makeDirectory(managedPythonTarget, { recursive: true });
-        yield* fs.copyFile(source, path.join(managedPythonTarget, file));
+        const target = path.join(managedPythonTarget, file);
+        yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+        yield* fs.copyFile(source, target);
       }
       yield* Effect.log(
-        `[cli] Staged the managed Python specification into ${SCIENT_MANAGED_PYTHON_ASSET}`,
+        `[cli] Staged Scientific Python and MATLAB connection specifications into ${SCIENT_MANAGED_PYTHON_ASSET}`,
       );
     }),
 ).pipe(Command.withDescription("Build the server package (tsdown + bundle web client)."));
@@ -278,8 +285,7 @@ const publishCmd = Command.make(
         "dist/service-launcher.mjs",
         "dist/client/index.html",
         ...SCIENT_COMPUTE_BRIDGES.map((bridge) => bridge.asset),
-        `${SCIENT_MANAGED_PYTHON_ASSET}/pyproject.toml`,
-        `${SCIENT_MANAGED_PYTHON_ASSET}/uv.lock`,
+        ...SCIENT_MANAGED_PYTHON_SPEC_FILES.map((file) => `${SCIENT_MANAGED_PYTHON_ASSET}/${file}`),
       ]) {
         const abs = path.join(serverDir, relPath);
         if (!(yield* fs.exists(abs))) {

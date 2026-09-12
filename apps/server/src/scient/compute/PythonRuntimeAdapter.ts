@@ -568,9 +568,14 @@ export function makePythonRuntimeAdapter(
         };
       }
 
+      // `detected` is the MATLAB contract: inspect stays a probe, but
+      // `compute.verifyRuntime` will start and close a real session. Omitting
+      // it makes Test look like a connection failure and used to send people
+      // to Repair.
       return {
         profile: launchRequest.profile,
         readiness,
+        ...(readiness === "ready" ? { connection: "detected" as const } : {}),
         missingRequirements: missing,
         message: verificationMessage(readiness, missing),
         packages: observedPackages(probe),

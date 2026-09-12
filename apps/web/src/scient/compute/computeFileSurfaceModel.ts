@@ -54,12 +54,36 @@ export type ComputeRuntimeToolbarState =
       readonly kind: "status";
       readonly label: string;
       readonly canRun: boolean;
+      readonly note?: string;
     }
   | {
       readonly kind: "switch";
       readonly label: string;
       readonly canRun: true;
     };
+
+export function computeRuntimeSetupActionLabel(languageId: string, languageName: string): string {
+  return languageId === "matlab" ? `Connect ${languageName}` : `Set up ${languageName}`;
+}
+
+/** One-line file-header failure. The full text belongs behind copy / details. */
+export function computeRuntimeFailureHeadline(languageId: string, failure: string): string {
+  const trimmed = failure.trim();
+  if (trimmed.length === 0)
+    return languageId === "matlab" ? "Connection setup failed" : "Setup failed";
+  if (languageId === "matlab") return "Connection setup failed";
+  const firstLine = trimmed.split(/\r?\n/, 1)[0]?.trim() ?? "Setup failed";
+  if (
+    firstLine.length <= 40 &&
+    !firstLine.includes("/") &&
+    !/ENOENT|uv\.lock|pyproject/iu.test(firstLine)
+  ) {
+    return firstLine;
+  }
+  return "Python setup failed";
+}
+
+const SCIENTIFIC_PACKAGES_NOTE = "Figures libraries are not in this environment";
 
 export function isComputeCapacityReachedError(error: unknown): boolean {
   return (
@@ -131,9 +155,19 @@ export function nudgeComputeFileSplit(
   );
 }
 
+function computeRuntimePresenceLabel(
+  languageName: string,
+  version: string | null | undefined,
+): string {
+  const trimmed = version?.trim();
+  if (trimmed && trimmed !== "unknown") return `${languageName} ${trimmed}`;
+  return languageName;
+}
+
 export function resolveComputeRuntimeToolbarState(input: {
   readonly languageId?: string;
   readonly languageName?: string;
+  readonly runtimeVersion?: string | null;
   readonly liveSession: ComputeRuntimeToolbarSession | null;
   readonly runtimeInspectionPending: boolean;
   readonly readyRuntimeAvailable: boolean;
@@ -148,10 +182,20 @@ export function resolveComputeRuntimeToolbarState(input: {
     | "closing"
     | "close-failed"
     | "terminal";
+  /** Helper/setup failure is not ready. Do not pair it with a ready chip. */
+  readonly connectionSetupFailed?: boolean;
 }): ComputeRuntimeToolbarState {
   const languageId = input.languageId ?? "python";
   const languageName = input.languageName ?? "Python";
   const session = input.liveSession;
+  const presenceLabel = computeRuntimePresenceLabel(languageName, input.runtimeVersion);
+  if (input.connectionSetupFailed) {
+    return {
+      kind: "setup",
+      label: computeRuntimeSetupActionLabel(languageId, languageName),
+      canRun: false,
+    };
+  }
   if (input.contextLifecycle === "starting") {
     if (input.capacityRecoveryAvailable) {
       return { kind: "status", label: `${languageName} capacity reached`, canRun: true };
@@ -187,23 +231,27 @@ export function resolveComputeRuntimeToolbarState(input: {
     }
     return {
       kind: "status",
-      label: input.scientificPackagesMissing
-        ? `${languageName} packages missing`
-        : `${languageName} ready`,
+      label: `${languageName} ready`,
       canRun: true,
+      ...(input.scientificPackagesMissing ? { note: SCIENTIFIC_PACKAGES_NOTE } : {}),
     };
   }
+  // Inspect is a package-metadata probe. Do not call that "ready"; Run still
+  // starts a real session. "Python ready" is reserved for a live session above.
   if (input.readyRuntimeAvailable) {
     return {
       kind: "status",
-      label: input.scientificPackagesMissing
-        ? `${languageName} packages missing`
-        : `${languageName} ready`,
+      label: presenceLabel,
       canRun: true,
+      ...(input.scientificPackagesMissing ? { note: SCIENTIFIC_PACKAGES_NOTE } : {}),
     };
   }
   if (input.runtimeInspectionPending) {
     return { kind: "status", label: `Checking ${languageName}…`, canRun: false };
   }
-  return { kind: "setup", label: `Set up ${languageName}`, canRun: false };
+  return {
+    kind: "setup",
+    label: computeRuntimeSetupActionLabel(languageId, languageName),
+    canRun: false,
+  };
 }

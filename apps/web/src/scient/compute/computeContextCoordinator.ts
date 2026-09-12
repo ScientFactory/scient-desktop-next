@@ -194,13 +194,3 @@ export async function closeComputeContext(
   useComputeContextStore.getState().markCloseFailed({ contextId: input.contextId, error });
   return { closed: false, contextId: input.contextId, error };
 }
-
-export function computeSessionRecordForContext(
-  contextId: ComputeContextId | null | undefined,
-  sessions: ReadonlyArray<ComputeSessionRecord>,
-): ComputeSessionRecord | null {
-  if (contextId === null || contextId === undefined) return null;
-  const binding = getComputeContext(contextId);
-  if (binding?.sessionId === null || binding?.sessionId === undefined) return null;
-  return sessions.find((session) => session.sessionId === binding.sessionId) ?? null;
-}

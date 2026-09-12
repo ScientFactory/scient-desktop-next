@@ -197,15 +197,6 @@ export function computeFileContextId(input: {
   );
 }
 
-export function computeFileContextOwnerKey(input: {
-  readonly environmentId: EnvironmentId;
-  readonly threadId: string;
-  readonly cwd: string;
-  readonly relativePath: string;
-}): string {
-  return `${input.environmentId}:${input.threadId}:${input.cwd}:${input.relativePath}`;
-}
-
 export function computeContextBindingForSurface(input: {
   readonly contextId: ComputeContextId;
   readonly environmentId: EnvironmentId;

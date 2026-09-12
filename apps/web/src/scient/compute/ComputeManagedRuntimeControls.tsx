@@ -1,5 +1,13 @@
 import { useRef, useState } from "react";
-import { Download, LoaderCircle, Trash2, Wrench } from "lucide-react";
+import {
+  CheckIcon,
+  ChevronDown,
+  CopyIcon,
+  Download,
+  LoaderCircle,
+  Trash2,
+  Wrench,
+} from "lucide-react";
 import type {
   ComputeLanguageId,
   ComputeManagedRuntimeAction,
@@ -10,6 +18,8 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import { computeEnvironment } from "~/state/compute";
 import { useEnvironmentQuery } from "~/state/query";
 import { useAtomCommand } from "~/state/use-atom-command";
+import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { cn } from "~/lib/utils";
 import { Button } from "~/components/ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "~/components/ui/tooltip";
 import {
@@ -21,6 +31,7 @@ import {
   AlertDialogPopup,
   AlertDialogTitle,
 } from "~/components/ui/alert-dialog";
+import { computeRuntimeFailureHeadline } from "./computeFileSurfaceModel";
 
 export function managedRuntimeOperationLabel(status: ComputeManagedRuntimeStatus): string | null {
   const operation = status.operation;
@@ -58,15 +69,18 @@ export function useComputeManagedRuntime(input: {
   const cancelCommand = useAtomCommand(computeEnvironment.cancelManagedRuntime, {
     reportFailure: false,
   });
+  // First-time file setup has no inventory status yet. Subscribe anyway so
+  // Set up Python / Connect MATLAB can show progress on the file, not only in Settings.
   const queried = useEnvironmentQuery(
-    input.environmentId && input.initialStatus !== null
+    input.environmentId
       ? computeEnvironment.managedRuntime({
           environmentId: input.environmentId,
           input: { languageId: input.languageId },
         })
       : null,
   );
-  const status = queried.data ?? input.initialStatus;
+  const [commandStatus, setCommandStatus] = useState<ComputeManagedRuntimeStatus | null>(null);
+  const status = queried.data ?? commandStatus ?? input.initialStatus;
   const [pending, setPending] = useState(false);
   const [localFailure, setLocalFailure] = useState<string | null>(null);
   const inFlight = useRef(false);
@@ -84,6 +98,7 @@ export function useComputeManagedRuntime(input: {
         input: { languageId: input.languageId, action },
       });
       if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+      if (result.value) setCommandStatus(result.value);
       return true;
     } catch (cause) {
       setLocalFailure(
@@ -108,7 +123,7 @@ export function useComputeManagedRuntime(input: {
   };
   return {
     status,
-    busy: pending || status?.operation != null || queried.isPending,
+    busy: pending || status?.operation != null,
     failure: localFailure ?? queried.error ?? status?.failureMessage ?? null,
     act,
     cancel,
@@ -117,11 +132,96 @@ export function useComputeManagedRuntime(input: {
 
 export type ComputeManagedRuntimeController = ReturnType<typeof useComputeManagedRuntime>;
 
-export function ManagedRuntimeNotice({ runtime }: { runtime: ComputeManagedRuntimeController }) {
+export function ManagedRuntimeNotice({
+  runtime,
+  languageId,
+  variant = "block",
+  onRetry,
+}: {
+  runtime: ComputeManagedRuntimeController;
+  languageId?: string;
+  variant?: "block" | "toolbar";
+  onRetry?: () => void;
+}) {
   const progress = runtime.status && managedRuntimeOperationLabel(runtime.status);
-  if (!progress && !runtime.failure) return null;
+  const failure = runtime.failure;
+  const { copyToClipboard, isCopied } = useCopyToClipboard({ target: "runtime error" });
+  if (!progress && !failure) return null;
+  if (variant === "toolbar") {
+    const headline = failure
+      ? computeRuntimeFailureHeadline(languageId ?? "python", failure)
+      : null;
+    return (
+      <div
+        className="flex min-w-0 items-center gap-0.5 overflow-hidden"
+        data-compute-notice="toolbar"
+      >
+        {progress ? (
+          <div className="flex min-w-0 items-center gap-1" role="status">
+            <LoaderCircle className="size-3 shrink-0 animate-spin" aria-hidden />
+            <span className="truncate whitespace-nowrap text-xs text-muted-foreground">
+              {progress}
+            </span>
+            {runtime.status?.operation?.action !== "remove" ? (
+              <Button size="xs" variant="ghost-muted" onClick={() => void runtime.cancel()}>
+                Cancel
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+        {headline && failure ? (
+          <>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <button
+                    type="button"
+                    className="min-w-0 truncate whitespace-nowrap text-left text-xs text-destructive"
+                    role="alert"
+                    onClick={onRetry}
+                  />
+                }
+              >
+                {headline}
+              </TooltipTrigger>
+              <TooltipPopup>{onRetry === undefined ? headline : `Retry ${headline}`}</TooltipPopup>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    size="icon-xs"
+                    variant="ghost"
+                    className="size-5 shrink-0"
+                    aria-label="Copy error"
+                    onClick={() => copyToClipboard(failure, undefined)}
+                  />
+                }
+              >
+                {isCopied ? (
+                  <CheckIcon aria-hidden className="size-3" />
+                ) : (
+                  <CopyIcon aria-hidden className="size-3" />
+                )}
+              </TooltipTrigger>
+              <TooltipPopup>Copy the full error</TooltipPopup>
+            </Tooltip>
+            <details className="relative shrink-0">
+              <summary className="flex cursor-pointer list-none items-center text-muted-foreground marker:content-none [&::-webkit-details-marker]:hidden">
+                <ChevronDown className="size-3" aria-hidden />
+                <span className="sr-only">Error details</span>
+              </summary>
+              <pre className="absolute right-0 z-30 mt-1 max-h-40 w-80 max-w-[min(20rem,calc(100vw-2rem))] overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-popover p-2 text-[11px] text-destructive shadow-md">
+                {failure}
+              </pre>
+            </details>
+          </>
+        ) : null}
+      </div>
+    );
+  }
   return (
-    <div className="space-y-1 text-xs">
+    <div className="space-y-1 text-xs" data-compute-notice="block">
       {progress ? (
         <div className="flex flex-wrap items-center gap-1.5" role="status">
           <LoaderCircle className="size-3 animate-spin" aria-hidden />
@@ -133,9 +233,9 @@ export function ManagedRuntimeNotice({ runtime }: { runtime: ComputeManagedRunti
           ) : null}
         </div>
       ) : null}
-      {runtime.failure ? (
+      {failure ? (
         <p className="text-destructive" role="alert">
-          {runtime.failure}
+          {failure}
         </p>
       ) : null}
     </div>
@@ -147,20 +247,25 @@ export function ManagedRuntimeActions({
   connection = false,
   canProvision = true,
   disabled = false,
+  maintenanceOnly = false,
+  className,
 }: {
   runtime: ComputeManagedRuntimeController;
   connection?: boolean;
   canProvision?: boolean;
   disabled?: boolean;
+  maintenanceOnly?: boolean;
+  className?: string;
 }) {
   const [confirmRemove, setConfirmRemove] = useState(false);
   const status = runtime.status;
   if (!status) return null;
   const displayName = connection ? "MATLAB connection helper" : "Scient-managed Python";
   const busy = disabled || runtime.busy;
+  if (maintenanceOnly && !status.installed) return null;
   return (
     <>
-      <div className="flex flex-wrap items-center gap-0.5">
+      <div className={cn("flex flex-wrap items-center gap-0.5", className)}>
         {!status.installed ? (
           <Button
             size="xs"

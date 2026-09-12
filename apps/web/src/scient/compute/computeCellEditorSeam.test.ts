@@ -38,8 +38,16 @@ describe("Python active-cell editor seam", () => {
     expect(fileEditorSource).toContain("FILE_EDITOR_ACTION_GUTTER_UNSAFE_CSS");
     expect(fileEditorSource).toContain("[data-gutter-utility-slot]");
     expect(fileEditorSource).toContain("justify-content: flex-start");
+    expect(fileEditorSource).toContain("opacity: 0");
+    expect(fileEditorSource).toContain("[data-line]:hover [data-gutter-utility-slot]");
     expect(pythonSurfaceSource).toContain("renderEditorGutterAction: (");
     expect(pythonSurfaceSource).toContain("const hoveredLine = getHoveredLine();");
     expect(pythonSurfaceSource).not.toContain("onEditorGutterAction:");
+    expect(pythonSurfaceSource).toContain("enableFileComments={false}");
+    expect(pythonSurfaceSource).toContain("hasExplicitCells");
+    expect(pythonSurfaceSource).toContain("props.language.cellMarker.test(line)");
+    expect(fileEditorSource).toContain("enableFileComments = true");
+    expect(fileEditorSource).toContain("enableFileComments &&");
+    expect(fileEditorSource).toContain("enableFileComments ? lineAnnotations : []");
   });
 });

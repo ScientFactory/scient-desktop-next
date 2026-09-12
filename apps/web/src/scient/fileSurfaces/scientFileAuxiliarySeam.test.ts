@@ -17,6 +17,16 @@ describe("Scient file surface seams", () => {
     expect(source).not.toMatch(/matlab|-batch|AnalysisRunFilePanel/iu);
   });
 
+  it("keeps fresh-process MATLAB off the default .m surface until Run as one-shot", () => {
+    const auxiliary = NodeFS.readFileSync(
+      new URL("./ScientFileAuxiliarySurface.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(auxiliary).toContain("useMatlabOneShotSurface");
+    expect(auxiliary).toContain("Fresh-process MATLAB runs");
+    expect(auxiliary).toContain("!oneShotVisible");
+  });
+
   it("keeps Python execution controls in the Scient-owned file surface", () => {
     const surface = NodeFS.readFileSync(
       new URL("../compute/ScientComputeFileSurface.tsx", import.meta.url),
@@ -51,6 +61,10 @@ describe("Scient file surface seams", () => {
     expect(results).not.toContain("<Pause");
     expect(results).toContain('aria-label="Compute session history"');
     expect(results).toContain("MenuRadioGroup");
+    expect(results).toContain('role="tablist"');
+    expect(results).toContain('aria-label="Compute view"');
+    expect(results).not.toContain("setVariablesOpen");
+    expect(results).not.toContain("showVariablesTab");
     expect(output).toContain("useAssetUrlState");
     expect(output).toContain("<img");
     expect(output).toContain("StaticArtifactPresentationMenu");
